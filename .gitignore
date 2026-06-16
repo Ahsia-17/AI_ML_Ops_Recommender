@@ -1,0 +1,32 @@
+# Data
+data/
+
+# Models
+models/
+artifacts/
+checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Virtual environments
+venv/
+.venv/
+
+# VS Code
+.vscode/
+
+# Kaggle credentials
+.kaggle/
+kaggle.json
+access_token
+
+# Model files
+*.pt
+*.pth
+*.pkl
+*.joblib
