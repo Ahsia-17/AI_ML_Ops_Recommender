@@ -1,0 +1,40 @@
+{
+  "run_description": "Same model/architecture as 26week_30epoch_no_temporal.json, but widened the chronological sample window from 26 to 52 weeks to test whether more historical data keeps helping the way 12->26 weeks did. Result: it does NOT help -- slightly worse than the 26-week run at every epoch from 15 onward, and plateaus by epoch 20-25 instead of continuing to climb through epoch 30. Likely explanation: the earlier 12->26 week win had a verified mechanism (fixing a real cold-start sampling artifact -- 75% of '12-week-cold' customers had purchase history just outside that window). Going to 52 weeks has no equivalent story; the extra 6 months reach back into a different fashion season (late 2019/early 2020) whose patterns may not transfer well to predicting the September 2020 test week, diluting training signal with stale data rather than adding useful signal.",
+  "config": {
+    "sample_weeks": 52,
+    "temporal_features": false,
+    "epochs": 30,
+    "checkpoint_every": 5,
+    "batch_size": 1024,
+    "embedding_dim": 64,
+    "tower_hidden_dims": [128, 64],
+    "dropout": 0.1,
+    "lr": 0.001
+  },
+  "data_stats": {
+    "train_rows": 14368795,
+    "customers": 993492,
+    "articles": 70840
+  },
+  "loss_history": [
+    {"epoch": 1, "train_loss": 6.752260993354812, "val_loss": 6.742204857638562},
+    {"epoch": 5, "train_loss": 5.965786323342111, "val_loss": 6.731011224080281},
+    {"epoch": 10, "train_loss": 5.783826423377784, "val_loss": 6.772068963950896},
+    {"epoch": 15, "train_loss": 5.712276276562069, "val_loss": 6.790791071083651},
+    {"epoch": 20, "train_loss": 5.665854830324582, "val_loss": 6.819159140069801},
+    {"epoch": 25, "train_loss": 5.635562949366825, "val_loss": 6.821612549594128},
+    {"epoch": 30, "train_loss": 5.610640266058518, "val_loss": 6.843784140774524}
+  ],
+  "eval_metrics_model_plus_cold_start_fallback": {
+    "split": "test",
+    "by_epoch": [
+      {"epoch": 5,  "recall_at_12": 0.0059, "ndcg_at_12": 0.0035, "map_at_12": 0.0018},
+      {"epoch": 10, "recall_at_12": 0.0071, "ndcg_at_12": 0.0043, "map_at_12": 0.0024},
+      {"epoch": 15, "recall_at_12": 0.0077, "ndcg_at_12": 0.0047, "map_at_12": 0.0026},
+      {"epoch": 20, "recall_at_12": 0.0077, "ndcg_at_12": 0.0047, "map_at_12": 0.0026},
+      {"epoch": 25, "recall_at_12": 0.0078, "ndcg_at_12": 0.0049, "map_at_12": 0.0028},
+      {"epoch": 30, "recall_at_12": 0.0078, "ndcg_at_12": 0.0049, "map_at_12": 0.0028}
+    ]
+  },
+  "conclusion": "More historical depth is not simply better for this domain -- there's an apparent sweet spot around 26 weeks. Recommend reverting sample_weeks to 26 as the working baseline (best result in the project: Recall@12 0.0089, MAP@12 0.0031 at epoch 30). See README.md key findings."
+}

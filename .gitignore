@@ -1,10 +1,8 @@
 # Data
-data/
+/data/
 
-# Models
-models/
-artifacts/
-checkpoints/
+# Training artifacts
+/checkpoints/
 
 # Python
 __pycache__/

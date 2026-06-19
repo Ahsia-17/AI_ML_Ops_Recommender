@@ -1,0 +1,39 @@
+{
+  "run_description": "Baseline retrieval model, no temporal features, 26-week chronological sample window. Reconstructed from chat transcript after the live checkpoint/history files were overwritten by the subsequent 52-week run (same fixed file paths) -- see experiments/README.md for the fix going forward.",
+  "config": {
+    "sample_weeks": 26,
+    "temporal_features": false,
+    "epochs": 30,
+    "checkpoint_every": 5,
+    "batch_size": 1024,
+    "embedding_dim": 64,
+    "tower_hidden_dims": [128, 64],
+    "dropout": 0.1,
+    "lr": 0.001
+  },
+  "data_stats": {
+    "train_rows": 7629497,
+    "customers": 745513,
+    "articles": 51375
+  },
+  "loss_history": [
+    {"epoch": 1, "train_loss": 6.785459335890392, "val_loss": 6.808918968261964},
+    {"epoch": 5, "train_loss": 5.850596991929432, "val_loss": 6.941340881179135},
+    {"epoch": 10, "train_loss": 5.51531886151973, "val_loss": 7.120009897224396},
+    {"epoch": 15, "train_loss": 5.359562723364606, "val_loss": 7.207024562789734},
+    {"epoch": 20, "train_loss": 5.262981178424503, "val_loss": 7.257571620634761},
+    {"epoch": 25, "train_loss": 5.201469899439972, "val_loss": 7.283259857131775},
+    {"epoch": 30, "train_loss": 5.158436313987578, "val_loss": 7.313877806606063}
+  ],
+  "eval_metrics_model_plus_cold_start_fallback": {
+    "split": "test",
+    "by_epoch": [
+      {"epoch": 5,  "recall_at_12": 0.0060, "ndcg_at_12": 0.0035, "map_at_12": 0.0018},
+      {"epoch": 10, "recall_at_12": 0.0071, "ndcg_at_12": 0.0043, "map_at_12": 0.0023},
+      {"epoch": 15, "recall_at_12": 0.0079, "ndcg_at_12": 0.0050, "map_at_12": 0.0028},
+      {"epoch": 20, "recall_at_12": 0.0081, "ndcg_at_12": 0.0050, "map_at_12": 0.0028},
+      {"epoch": 25, "recall_at_12": 0.0087, "ndcg_at_12": 0.0054, "map_at_12": 0.0031},
+      {"epoch": 30, "recall_at_12": 0.0089, "ndcg_at_12": 0.0055, "map_at_12": 0.0031}
+    ]
+  }
+}

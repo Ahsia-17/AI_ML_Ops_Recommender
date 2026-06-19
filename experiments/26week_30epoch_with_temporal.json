@@ -1,0 +1,27 @@
+{
+  "run_description": "Same 26-week window, but with 4 temporal features wired in (customer recency/cadence/30d-frequency, article 30d recency-weighted popularity). Reconstructed from chat transcript for the same reason as 26week_30epoch_no_temporal.json. This run is what led to dropping the temporal features -- it peaked at epoch 5 and never improved further, while the no-temporal-features run kept climbing the whole way to epoch 30.",
+  "config": {
+    "sample_weeks": 26,
+    "temporal_features": true,
+    "temporal_feature_list": [
+      "customer_idx_days_since_prev (recency, collapsed to only 3 buckets due to same-day multi-item baskets)",
+      "customer_idx_avg_days_between (cadence)",
+      "customer_idx_count_last_30d (frequency)",
+      "article_idx_count_last_30d (recency-weighted popularity)"
+    ],
+    "epochs": 30,
+    "checkpoint_every": 5
+  },
+  "eval_metrics_model_plus_cold_start_fallback": {
+    "split": "test",
+    "by_epoch": [
+      {"epoch": 5,  "recall_at_12": 0.0078, "ndcg_at_12": 0.0045, "map_at_12": 0.0022},
+      {"epoch": 10, "recall_at_12": 0.0071, "ndcg_at_12": 0.0041, "map_at_12": 0.0020},
+      {"epoch": 15, "recall_at_12": 0.0071, "ndcg_at_12": 0.0043, "map_at_12": 0.0022},
+      {"epoch": 20, "recall_at_12": 0.0069, "ndcg_at_12": 0.0041, "map_at_12": 0.0021},
+      {"epoch": 25, "recall_at_12": 0.0075, "ndcg_at_12": 0.0044, "map_at_12": 0.0023},
+      {"epoch": 30, "recall_at_12": 0.0072, "ndcg_at_12": 0.0042, "map_at_12": 0.0022}
+    ]
+  },
+  "conclusion": "Temporal features capped performance rather than just being neutral -- ruled out the 'needs more epochs to warm up' hypothesis directly. Features were reverted; see README.md key findings #5."
+}
