@@ -1,0 +1,14 @@
+.git/
+.claude/
+data/raw/
+data/processed/transactions_sample.parquet
+data/processed/test.parquet
+data/processed/val.parquet
+checkpoints/26w/two_tower_epoch*.pt
+checkpoints/26w/training_history.json
+notebooks/
+experiments/
+azure/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/

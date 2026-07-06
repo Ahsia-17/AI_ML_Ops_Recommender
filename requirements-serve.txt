@@ -1,0 +1,13 @@
+# Minimal deps for src/serve.py + src/api.py only -- NOT training.
+# CPU-only torch build: the serving container has no GPU to use, and the
+# default PyPI torch wheel pulls several GB of unused NVIDIA CUDA
+# libraries (confirmed: full requirements.txt produced a 4.8GB image).
+--index-url https://download.pytorch.org/whl/cpu
+--extra-index-url https://pypi.org/simple
+
+torch==2.10.0
+pandas==2.3.2
+numpy==2.2.6
+pyarrow==21.0.0
+fastapi==0.138.0
+uvicorn==0.44.0

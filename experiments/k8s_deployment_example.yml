@@ -1,0 +1,23 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hm-two-tower-recommender
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: hm-two-tower-recommender
+  template:
+    metadata:
+      labels:
+        app: hm-two-tower-recommender
+    spec:
+      containers:
+        - name: hm-two-tower-recommender
+          image: <your-registry>.azurecr.io/hm-two-tower:v1
+          ports:
+            - containerPort: 8080
+          resources:
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
