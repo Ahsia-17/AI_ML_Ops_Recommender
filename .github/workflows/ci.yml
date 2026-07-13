@@ -32,7 +32,7 @@ jobs:
               "article_idx": 2000, "product_type_idx": 50, "colour_group_idx": 30,
               "department_idx": 20, "index_idx": 10, "garment_group_idx": 15,
           }
-          model = TwoTowerModel(vocab_sizes, embedding_dim=64, tower_hidden_dims=[128, 64], dropout=0.1)
+          model = TwoTowerModel(vocab_sizes, embedding_dim=64, hidden_dims=(128, 64), dropout=0.1)
 
           B = 16
           user_feats = {
