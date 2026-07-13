@@ -25,19 +25,24 @@ DTYPES = {
 }
 
 
-def find_max_date(path) -> pd.Timestamp:
+def find_max_date(path, hard_cutoff: pd.Timestamp = None) -> pd.Timestamp:
     max_date = None
     for chunk in pd.read_csv(path, usecols=["t_dat"], parse_dates=["t_dat"], chunksize=CHUNK_SIZE):
         chunk_max = chunk["t_dat"].max()
         if max_date is None or chunk_max > max_date:
             max_date = chunk_max
+    # If a hard cutoff is provided, cap the max date there — simulates
+    # "we only have data up to this point in time" for versioned pipeline runs.
+    if hard_cutoff is not None and max_date > hard_cutoff:
+        max_date = hard_cutoff
     return max_date
 
 
-def build_sample(weeks: int) -> pd.DataFrame:
-    max_date = find_max_date(TRANSACTIONS_PATH)
-    cutoff = max_date - pd.Timedelta(weeks=weeks)
-    print(f"Full data range ends {max_date.date()}; keeping rows on/after {cutoff.date()}")
+def build_sample(weeks: int, cutoff: str = None) -> pd.DataFrame:
+    hard_cutoff = pd.Timestamp(cutoff) if cutoff else None
+    max_date = find_max_date(TRANSACTIONS_PATH, hard_cutoff)
+    window_start = max_date - pd.Timedelta(weeks=weeks)
+    print(f"Snapshot cutoff: {max_date.date()}; keeping rows from {window_start.date()} to {max_date.date()}")
 
     keep_chunks = []
     for chunk in pd.read_csv(
@@ -46,7 +51,7 @@ def build_sample(weeks: int) -> pd.DataFrame:
         dtype=DTYPES,
         chunksize=CHUNK_SIZE,
     ):
-        filtered = chunk[chunk["t_dat"] >= cutoff]
+        filtered = chunk[(chunk["t_dat"] >= window_start) & (chunk["t_dat"] <= max_date)]
         if not filtered.empty:
             keep_chunks.append(filtered)
 
@@ -59,10 +64,18 @@ def build_sample(weeks: int) -> pd.DataFrame:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--weeks", type=int, default=CONFIG.sample_weeks)
+    parser.add_argument(
+        "--cutoff", type=str, default=None,
+        help="Hard cutoff date (YYYY-MM-DD). Keep all rows ON OR BEFORE this date, "
+             "then apply the trailing --weeks window from there. "
+             "Simulates a point-in-time data snapshot for versioned pipeline runs "
+             "(e.g. --cutoff 2020-06-30 for v1, 2020-07-31 for v2, 2020-08-31 for v3). "
+             "If omitted, uses the actual max date in the file."
+    )
     args = parser.parse_args()
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    sample = build_sample(args.weeks)
+    sample = build_sample(args.weeks, cutoff=args.cutoff)
     sample.to_parquet(SAMPLE_PATH, index=False)
     print(f"Wrote {SAMPLE_PATH}")
 

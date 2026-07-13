@@ -14,6 +14,10 @@ catalog, take top-K) is cheap and is what .recommend()/.recommend_batch()
 do, meant to be called many times against the same loaded instance.
 """
 
+import os
+import tempfile
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import torch
@@ -31,16 +35,63 @@ from src.evaluate import (
 MAX_K = max(CONFIG.top_k)
 
 
+def _blob_download(container_client, blob_path: str, local_path: Path) -> None:
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(local_path, "wb") as f:
+        f.write(container_client.download_blob(blob_path).readall())
+
+
+def _fetch_artifacts_from_blob(model_version: str, tmp_dir: Path) -> tuple[Path, Path]:
+    """Download checkpoint and processed feature files from Azure Blob Storage.
+
+    Reads three env vars set by the Kubernetes Deployment:
+      AZURE_STORAGE_CONNECTION_STRING  — full connection string (from a K8s Secret)
+      BLOB_CONTAINER                   — blob container name (workspaceblobstore container)
+      MODEL_VERSION                    — e.g. 'v1' (selects processed/v1/ and checkpoints/v1/)
+
+    Returns (checkpoint_path, processed_dir) pointing at the downloaded files.
+    """
+    from azure.storage.blob import BlobServiceClient
+
+    conn_str   = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
+    container  = os.environ.get("BLOB_CONTAINER", "azureml")
+    version    = model_version
+
+    client = BlobServiceClient.from_connection_string(conn_str).get_container_client(container)
+
+    checkpoint_path = tmp_dir / "two_tower.pt"
+    _blob_download(client, f"checkpoints/{version}/two_tower.pt", checkpoint_path)
+
+    processed_dir = tmp_dir / "processed"
+    for fname in ["articles_features.parquet", "customers_features.parquet",
+                  "train.parquet", "encoders.pkl"]:
+        _blob_download(client, f"processed/{version}/{fname}", processed_dir / fname)
+
+    return checkpoint_path, processed_dir
+
+
 class RecommenderService:
     def __init__(self, checkpoint_path=None, run_name: str = None, device: str = None):
-        run_name = run_name or f"{CONFIG.sample_weeks}w"
-        checkpoint_path = checkpoint_path or (CHECKPOINTS_DIR / run_name / "two_tower.pt")
         self.device = torch.device(device or (CONFIG.device if torch.cuda.is_available() else "cpu"))
+
+        # If AZURE_STORAGE_CONNECTION_STRING is set, pull artifacts from Blob Storage.
+        # Otherwise fall back to local paths (local dev / unit tests).
+        if os.environ.get("AZURE_STORAGE_CONNECTION_STRING"):
+            model_version = os.environ.get("MODEL_VERSION", "v1")
+            print(f"Downloading model artifacts from Blob Storage (version={model_version})...")
+            tmp_dir = Path(tempfile.mkdtemp(prefix="hm_serve_"))
+            checkpoint_path, processed_dir = _fetch_artifacts_from_blob(model_version, tmp_dir)
+            print("Download complete.")
+        else:
+            run_name = run_name or f"{CONFIG.sample_weeks}w"
+            checkpoint_path = checkpoint_path or (CHECKPOINTS_DIR / run_name / "two_tower.pt")
+            processed_dir = PROCESSED_DIR
+
         self.model = load_model(self.device, checkpoint_path=checkpoint_path)
 
-        article_features = pd.read_parquet(PROCESSED_DIR / "articles_features.parquet")
-        customer_features = pd.read_parquet(PROCESSED_DIR / "customers_features.parquet")
-        train_df = pd.read_parquet(PROCESSED_DIR / "train.parquet", columns=["customer_idx", "article_idx"])
+        article_features = pd.read_parquet(processed_dir / "articles_features.parquet")
+        customer_features = pd.read_parquet(processed_dir / "customers_features.parquet")
+        train_df = pd.read_parquet(processed_dir / "train.parquet", columns=["customer_idx", "article_idx"])
 
         # Encode the whole catalog ONCE — this is the expensive part this
         # class exists to amortize across many requests.

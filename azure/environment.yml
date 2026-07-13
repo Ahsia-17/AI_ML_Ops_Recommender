@@ -1,0 +1,15 @@
+name: hm-recommender-training
+channels:
+  - defaults
+dependencies:
+  - python=3.10
+  - pip:
+    - torch==2.10.0
+    - pandas==2.3.2
+    - numpy==2.2.6
+    - scikit-learn==1.5.2
+    - pyarrow==21.0.0
+    - torchmetrics==1.8.2
+    - tqdm
+    - azureml-core
+    - azure-ai-ml

@@ -135,16 +135,23 @@ def main():
         "--checkpoint", type=str, default=None,
         help="Explicit checkpoint path, overrides --run-name (e.g. checkpoints/26w/two_tower_epoch15.pt).",
     )
+    parser.add_argument(
+        "--processed-dir", type=str, default=None,
+        help="Override processed data directory. Used by Azure ML Pipeline to pass the versioned feature folder.",
+    )
     args = parser.parse_args()
+
+    from pathlib import Path
+    processed_dir = Path(args.processed_dir) if args.processed_dir else PROCESSED_DIR
 
     checkpoint_path = args.checkpoint or (CHECKPOINTS_DIR / args.run_name / "two_tower.pt")
     device = torch.device(CONFIG.device if torch.cuda.is_available() else "cpu")
     model = load_model(device, checkpoint_path=checkpoint_path)
 
-    customer_features = pd.read_parquet(PROCESSED_DIR / "customers_features.parquet")
-    article_features = pd.read_parquet(PROCESSED_DIR / "articles_features.parquet")
-    train_df = pd.read_parquet(PROCESSED_DIR / "train.parquet")
-    eval_df = pd.read_parquet(PROCESSED_DIR / f"{args.split}.parquet")
+    customer_features = pd.read_parquet(processed_dir / "customers_features.parquet")
+    article_features = pd.read_parquet(processed_dir / "articles_features.parquet")
+    train_df = pd.read_parquet(processed_dir / "train.parquet")
+    eval_df = pd.read_parquet(processed_dir / f"{args.split}.parquet")
 
     eval_customers = customer_features[customer_features["customer_idx"].isin(eval_df["customer_idx"])]
     ground_truth = eval_df.groupby("customer_idx")["article_idx"].apply(set).to_dict()

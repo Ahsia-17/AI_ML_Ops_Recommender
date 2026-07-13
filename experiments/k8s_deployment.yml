@@ -1,0 +1,50 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hm-two-tower-recommender
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: hm-two-tower-recommender
+  template:
+    metadata:
+      labels:
+        app: hm-two-tower-recommender
+    spec:
+      containers:
+        - name: hm-two-tower-recommender
+          image: hmrecommenderacr.azurecr.io/hm-recommender:v1
+          ports:
+            - containerPort: 8080
+          env:
+            - name: AZURE_STORAGE_CONNECTION_STRING
+              valueFrom:
+                secretKeyRef:
+                  name: blob-credentials
+                  key: connection-string
+            - name: BLOB_CONTAINER
+              value: "azureml-blobstore-7157eb24-5268-482d-adb1-10eb89c8a1c2"
+            - name: MODEL_VERSION
+              value: "v1"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "1000m"
+              memory: "2Gi"
+          # Container downloads 200MB+ from Blob Storage at startup —
+          # give it time before the liveness probe starts checking.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            failureThreshold: 30
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 15

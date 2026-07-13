@@ -23,6 +23,9 @@ venv/
 kaggle.json
 access_token
 
+# Azure credentials
+config.json
+
 # Model files
 *.pt
 *.pth

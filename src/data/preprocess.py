@@ -113,6 +113,20 @@ def chronological_split(transactions: pd.DataFrame) -> tuple[pd.DataFrame, pd.Da
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--version", type=str, default=None,
+        help="Feature store version tag (e.g. 'v1', 'v2', 'v3'). "
+             "Outputs go to data/processed/{version}/ locally and "
+             "processed/{version}/ in Blob Storage. "
+             "If omitted, writes to data/processed/ (legacy flat layout)."
+    )
+    args = parser.parse_args()
+
+    out_dir = (PROCESSED_DIR / args.version) if args.version else PROCESSED_DIR
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     transactions = pd.read_parquet(PROCESSED_DIR / "transactions_sample.parquet")
 
     customer_features, customer_encoders = build_customer_features(set(transactions["customer_id"]))
@@ -131,11 +145,11 @@ def main():
     assert train["t_dat"].max() < val["t_dat"].min(), "train/val leakage"
     assert val["t_dat"].max() < test["t_dat"].min(), "val/test leakage"
 
-    customer_features.to_parquet(PROCESSED_DIR / "customers_features.parquet", index=False)
-    article_features.to_parquet(PROCESSED_DIR / "articles_features.parquet", index=False)
-    train.to_parquet(PROCESSED_DIR / "train.parquet", index=False)
-    val.to_parquet(PROCESSED_DIR / "val.parquet", index=False)
-    test.to_parquet(PROCESSED_DIR / "test.parquet", index=False)
+    customer_features.to_parquet(out_dir / "customers_features.parquet", index=False)
+    article_features.to_parquet(out_dir / "articles_features.parquet", index=False)
+    train.to_parquet(out_dir / "train.parquet", index=False)
+    val.to_parquet(out_dir / "val.parquet", index=False)
+    test.to_parquet(out_dir / "test.parquet", index=False)
 
     encoders = {
         "customer": customer_encoders,
@@ -155,11 +169,11 @@ def main():
             },
         },
     }
-    with open(PROCESSED_DIR / "encoders.pkl", "wb") as f:
+    with open(out_dir / "encoders.pkl", "wb") as f:
         pickle.dump(encoders, f)
 
     print(f"customers={len(customer_features):,} articles={len(article_features):,}")
-    print(f"Wrote processed tables + encoders to {PROCESSED_DIR}")
+    print(f"Wrote processed tables + encoders to {out_dir}")
 
 
 if __name__ == "__main__":
