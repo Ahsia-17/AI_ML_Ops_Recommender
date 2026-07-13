@@ -30,10 +30,14 @@ def set_seed(seed: int):
 
 
 def run_epoch(model, dataset: TwoTowerDataset, batch_size, device, optimizer=None) -> float:
+    # Doubles as train and eval pass — optimizer=None signals eval mode.
     train_mode = optimizer is not None
     model.train(train_mode)
     total_loss, total_examples = 0.0, 0
     batches = dataset.iter_batches(batch_size, shuffle=train_mode, drop_last=True, device=device)
+    # torch.no_grad() skips building the computation graph during eval,
+    # saving memory and time. torch.enable_grad() is the explicit counterpart
+    # needed here because no_grad can be inherited from an outer scope.
     context = torch.enable_grad() if train_mode else torch.no_grad()
     with context:
         for customer_batch, article_batch in tqdm(batches, total=dataset.num_batches(batch_size), leave=False):
@@ -46,12 +50,16 @@ def run_epoch(model, dataset: TwoTowerDataset, batch_size, device, optimizer=Non
                 optimizer.step()
 
             batch_size_actual = user_emb.size(0)
+            # Weighted accumulation so the epoch average is correct even if
+            # the last batch is smaller than batch_size (drop_last=False case).
             total_loss += loss.item() * batch_size_actual
             total_examples += batch_size_actual
     return total_loss / total_examples
 
 
 def save_checkpoint(model, vocab_sizes, path):
+    # vocab_sizes and architecture config are saved alongside weights so the model
+    # can be reconstructed at inference time without needing the original config file.
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
         {

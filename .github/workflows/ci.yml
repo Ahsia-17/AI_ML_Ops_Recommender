@@ -25,32 +25,39 @@ jobs:
           import torch
           from src.models.two_tower import TwoTowerModel, in_batch_sampled_softmax_loss
 
-          # Synthetic vocab sizes — no real data needed
+          # Keys must match what TwoTowerModel.__init__ reads from vocab_sizes
           vocab_sizes = {
-              "customer_idx": 1000, "age_bucket": 10, "fn": 3, "active": 3,
-              "postal_code_hash": 500, "club_member_status": 5, "fashion_news_frequency": 5,
-              "article_idx": 2000, "product_type_idx": 50, "colour_group_idx": 30,
-              "department_idx": 20, "index_idx": 10, "garment_group_idx": 15,
+              "customer_id": 1000,
+              "age_bucket": 10,
+              "postal_code_bucket": 500,
+              "club_member_status": 5,
+              "fashion_news_frequency": 5,
+              "article_id": 2000,
+              "product_type_name": 50,
+              "colour_group_name": 30,
+              "department_name": 20,
+              "index_name": 10,
+              "garment_group_name": 15,
           }
-          model = TwoTowerModel(vocab_sizes, embedding_dim=64, tower_hidden_dims=[128, 64], dropout=0.1)
+          model = TwoTowerModel(vocab_sizes, embedding_dim=64, hidden_dims=(128, 64), dropout=0.1)
 
           B = 16
           user_feats = {
-              "customer_idx":         torch.randint(0, 1000, (B,)),
-              "age_bucket":           torch.randint(0, 10,   (B,)),
-              "fn":                   torch.randint(0, 3,    (B,)),
-              "active":               torch.randint(0, 3,    (B,)),
-              "postal_code_hash":     torch.randint(0, 500,  (B,)),
-              "club_member_status":   torch.randint(0, 5,    (B,)),
-              "fashion_news_frequency": torch.randint(0, 5,  (B,)),
+              "customer_idx":              torch.randint(0, 1000, (B,)),
+              "age_bucket":                torch.randint(0, 10,   (B,)),
+              "fn_flag":                   torch.randint(0, 2,    (B,)),
+              "active_flag":               torch.randint(0, 2,    (B,)),
+              "postal_code_bucket":        torch.randint(0, 500,  (B,)),
+              "club_member_status_idx":    torch.randint(0, 5,    (B,)),
+              "fashion_news_frequency_idx":torch.randint(0, 5,    (B,)),
           }
           item_feats = {
-              "article_idx":      torch.randint(0, 2000, (B,)),
-              "product_type_idx": torch.randint(0, 50,   (B,)),
-              "colour_group_idx": torch.randint(0, 30,   (B,)),
-              "department_idx":   torch.randint(0, 20,   (B,)),
-              "index_idx":        torch.randint(0, 10,   (B,)),
-              "garment_group_idx":torch.randint(0, 15,   (B,)),
+              "article_idx":           torch.randint(0, 2000, (B,)),
+              "product_type_name_idx": torch.randint(0, 50,   (B,)),
+              "colour_group_name_idx": torch.randint(0, 30,   (B,)),
+              "department_name_idx":   torch.randint(0, 20,   (B,)),
+              "index_name_idx":        torch.randint(0, 10,   (B,)),
+              "garment_group_name_idx":torch.randint(0, 15,   (B,)),
           }
           user_emb, item_emb = model(user_feats, item_feats)
           loss = in_batch_sampled_softmax_loss(user_emb, item_emb)

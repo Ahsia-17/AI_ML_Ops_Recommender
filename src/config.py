@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 
+# __file__ is this config.py; .parent is src/; .parent.parent is the repo root.
 ROOT_DIR = Path(__file__).resolve().parent.parent
 RAW_DIR = ROOT_DIR / "data" / "raw"
 PROCESSED_DIR = ROOT_DIR / "data" / "processed"
@@ -13,6 +14,7 @@ class Config:
     sample_weeks: int = 26
 
     # Preprocessing
+    # -1 and 200 are sentinels so pd.cut includes all ages including the extremes.
     age_bins: tuple = (-1, 18, 25, 35, 45, 55, 65, 200)
     postal_code_buckets: int = 5000  # hash bucket size for high-cardinality postal_code
 
@@ -29,7 +31,7 @@ class Config:
     seed: int = 42
 
     # Evaluation
-    top_k: tuple = (12, 20, 50)
+    top_k: tuple = (12, 20, 50)  # 12 matches the Kaggle MAP@12 leaderboard metric
 
     device: str = "cuda"
 

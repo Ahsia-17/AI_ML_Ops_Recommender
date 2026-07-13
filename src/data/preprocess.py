@@ -44,12 +44,16 @@ def encode_column(series: pd.Series, unknown_token: str = "__UNK__") -> tuple[pd
 def bucket_age(age: pd.Series, bins) -> pd.Series:
     is_missing = age.isna()
     bucket = pd.cut(age, bins=bins, labels=False)
-    bucket = bucket.fillna(-1).astype("int64") + 1  # +1 reserves 0 for missing
+    # Shift by 1 so code 0 is always "missing", matching the convention in encode_column.
+    bucket = bucket.fillna(-1).astype("int64") + 1
     bucket[is_missing] = 0
     return bucket
 
 
 def hash_postal_code(postal_code: pd.Series, n_buckets: int) -> pd.Series:
+    # Hashing instead of LabelEncoding: postal codes are high-cardinality and new
+    # values appear at inference time, so a fixed-size hash bucket is more robust
+    # than a closed vocabulary that would OOV on unseen codes.
     return postal_code.apply(lambda x: hash(x) % n_buckets).astype("int64")
 
 
@@ -102,6 +106,8 @@ def build_article_features(article_ids: set) -> tuple[pd.DataFrame, dict]:
 
 
 def chronological_split(transactions: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    # 1-week test window matches the Kaggle leaderboard eval period (last week of data).
+    # Val is the week immediately before test so the model never sees future purchases during training.
     max_date = transactions["t_dat"].max()
     test_start = max_date - pd.Timedelta(weeks=1) + pd.Timedelta(days=1)
     val_start = test_start - pd.Timedelta(weeks=1)
@@ -140,6 +146,8 @@ def main():
     )
 
     train, val, test = chronological_split(transactions)
+    # .copy() materializes each split as an independent DataFrame so that
+    # downstream writes (e.g. adding columns) don't trigger SettingWithCopyWarning.
     train, val, test = train.copy(), val.copy(), test.copy()
     print(f"train={len(train):,} val={len(val):,} test={len(test):,}")
     assert train["t_dat"].max() < val["t_dat"].min(), "train/val leakage"
@@ -155,18 +163,15 @@ def main():
         "customer": customer_encoders,
         "article": article_encoders,
         "vocab_sizes": {
+            # +1 on encoder length accounts for code 0 (the UNK/missing sentinel),
+            # which is not stored as a key in the mapping dict but does occupy an
+            # embedding row — so the nn.Embedding vocab size must include it.
             "customer_id": len(customer_encoders["customer_id"]) + 1,
             "article_id": len(article_encoders["article_id"]) + 1,
-            "age_bucket": len(CONFIG.age_bins),
+            "age_bucket": len(CONFIG.age_bins),  # one bucket per bin interval
             "postal_code_bucket": CONFIG.postal_code_buckets,
-            **{
-                col: len(customer_encoders[col]) + 1
-                for col in CUSTOMER_CAT_COLS
-            },
-            **{
-                col: len(article_encoders[col]) + 1
-                for col in ARTICLE_CAT_COLS
-            },
+            **{col: len(customer_encoders[col]) + 1 for col in CUSTOMER_CAT_COLS},
+            **{col: len(article_encoders[col]) + 1 for col in ARTICLE_CAT_COLS},
         },
     }
     with open(out_dir / "encoders.pkl", "wb") as f:

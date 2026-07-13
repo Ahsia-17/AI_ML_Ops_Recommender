@@ -17,6 +17,8 @@ from src.config import CHECKPOINTS_DIR, CONFIG, PROCESSED_DIR
 from src.data.dataset import ARTICLE_FEATURE_COLS, CUSTOMER_FEATURE_COLS
 from src.models.two_tower import TwoTowerModel
 
+# Score users in chunks to avoid OOM when the full user×item similarity matrix
+# would be too large to materialize at once (e.g. 50k users × 50k items on CPU).
 USER_SCORE_CHUNK = 1024
 
 
@@ -29,6 +31,8 @@ def load_model(device, checkpoint_path) -> TwoTowerModel:
 
 
 def encode_catalog(model, article_features: pd.DataFrame, device) -> tuple[torch.Tensor, np.ndarray]:
+    # Encode the full item catalog once upfront — every user is then scored against
+    # the same fixed item embeddings via a single matrix multiply per chunk.
     feats = {
         "article_idx": torch.as_tensor(article_features["article_idx"].to_numpy(), dtype=torch.long, device=device),
     }
@@ -53,6 +57,7 @@ def encode_users(model, customer_features: pd.DataFrame, device) -> tuple[torch.
 
 
 def ndcg_at_k(hit_ranks: list, num_relevant: int, k: int) -> float:
+    # rank is 0-indexed, so position 1 in the NDCG formula is rank+2 (log2(2)=1 for the top hit).
     dcg = sum(1.0 / np.log2(rank + 2) for rank in hit_ranks if rank < k)
     ideal_hits = min(num_relevant, k)
     idcg = sum(1.0 / np.log2(i + 2) for i in range(ideal_hits))
@@ -169,6 +174,8 @@ def main():
 
     pop_items = popularity_baseline(train_df, max_k)
     pop_items_arr = np.array(pop_items)
+    # Tile the same popularity ranking into a (num_users × k) matrix so it can
+    # be passed to evaluate_rankings in the same format as the model's output.
     pop_topk = np.tile(pop_items_arr, (len(user_ids), 1))
     pop_metrics = evaluate_rankings(pop_topk, ground_truth, user_ids, CONFIG.top_k)
     print("Most-popular-items baseline:")

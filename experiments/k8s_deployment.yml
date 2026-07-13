@@ -18,6 +18,7 @@ spec:
           ports:
             - containerPort: 8080
           env:
+            # Blob Storage connection string — stored as a K8s Secret
             - name: AZURE_STORAGE_CONNECTION_STRING
               valueFrom:
                 secretKeyRef:
@@ -25,8 +26,44 @@ spec:
                   key: connection-string
             - name: BLOB_CONTAINER
               value: "azureml-blobstore-7157eb24-5268-482d-adb1-10eb89c8a1c2"
+            # Azure ML workspace config — used by serve.py to query the Model Registry
+            - name: AZURE_SUBSCRIPTION_ID
+              value: "d9431e53-775d-40b1-9936-6dfa5af12ee4"
+            - name: AZURE_RESOURCE_GROUP
+              value: "resource_jhu_rec_sys"
+            - name: AZURE_ML_WORKSPACE
+              value: "JHU_rec_sys"
+            # Service principal credentials for Model Registry access.
+            # Create the SP and the secret once:
+            #   az ad sp create-for-rbac --name hm-recommender-sp \
+            #     --role "AzureML Data Scientist" \
+            #     --scopes /subscriptions/d9431e53-.../resourceGroups/resource_jhu_rec_sys
+            #   kubectl create secret generic azure-sp-credentials \
+            #     --from-literal=client-id=<appId> \
+            #     --from-literal=client-secret=<password> \
+            #     --from-literal=tenant-id=<tenant>
+            - name: AZURE_CLIENT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: azure-sp-credentials
+                  key: client-id
+            - name: AZURE_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: azure-sp-credentials
+                  key: client-secret
+            - name: AZURE_TENANT_ID
+              valueFrom:
+                secretKeyRef:
+                  name: azure-sp-credentials
+                  key: tenant-id
+            # Registry model name + version number (e.g. "1", "2").
+            # pipeline.py prints the version after each training run.
+            # To swap models: kubectl set env deployment/hm-two-tower-recommender MODEL_VERSION=2
+            - name: MODEL_NAME
+              value: "hm-two-tower"
             - name: MODEL_VERSION
-              value: "v1"
+              value: "1"
           resources:
             requests:
               cpu: "500m"

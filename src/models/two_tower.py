@@ -22,6 +22,7 @@ def _mlp(input_dim: int, hidden_dims: tuple, output_dim: int, dropout: float) ->
     for h in hidden_dims:
         layers += [nn.Linear(prev_dim, h), nn.ReLU(), nn.Dropout(dropout)]
         prev_dim = h
+    # Final projection has no activation — the Tower applies L2 normalization after this.
     layers.append(nn.Linear(prev_dim, output_dim))
     return nn.Sequential(*layers)
 
@@ -43,6 +44,8 @@ class FeatureEmbedder(nn.Module):
     def __init__(self, feature_vocab_sizes: dict, embedding_dim: int):
         super().__init__()
         self.feature_names = list(feature_vocab_sizes.keys())
+        # nn.ModuleDict (not a plain dict) so PyTorch tracks these embeddings
+        # as registered parameters and includes them in model.parameters().
         self.embeddings = nn.ModuleDict(
             {
                 name: nn.Embedding(
@@ -79,8 +82,8 @@ class TwoTowerModel(nn.Module):
         customer_vocab_sizes = {
             "customer_idx": vocab_sizes["customer_id"],
             "age_bucket": vocab_sizes["age_bucket"],
-            "fn_flag": 2,
-            "active_flag": 2,
+            "fn_flag": 2,      # binary flag: 0 or 1
+            "active_flag": 2,  # binary flag: 0 or 1
             "postal_code_bucket": vocab_sizes["postal_code_bucket"],
             "club_member_status_idx": vocab_sizes["club_member_status"],
             "fashion_news_frequency_idx": vocab_sizes["fashion_news_frequency"],
@@ -93,6 +96,8 @@ class TwoTowerModel(nn.Module):
             "index_name_idx": vocab_sizes["index_name"],
             "garment_group_name_idx": vocab_sizes["garment_group_name"],
         }
+        # Guard against feature drift: if dataset.py and this file ever get out of sync
+        # on which columns exist, this will catch it at model construction time.
         assert set(customer_vocab_sizes) == {"customer_idx", *CUSTOMER_FEATURE_COLS}
         assert set(article_vocab_sizes) == {"article_idx", *ARTICLE_FEATURE_COLS}
 
@@ -115,6 +120,11 @@ def in_batch_sampled_softmax_loss(user_emb: torch.Tensor, item_emb: torch.Tensor
     """Cross-entropy over the in-batch similarity matrix: for each user,
     the matching item (same row) is the positive class and every other
     item in the batch is a sampled negative."""
+    # @ is Python's matrix multiply operator. Dividing by a small temperature
+    # sharpens the distribution — without it the softmax saturates near uniform
+    # because L2-normalized dot products stay close to zero.
     logits = user_emb @ item_emb.T / temperature
+    # Positive pairs are on the diagonal: user[i] should match item[i].
+    # torch.arange gives [0, 1, 2, ..., B-1] as the target class per row.
     labels = torch.arange(logits.size(0), device=logits.device)
     return F.cross_entropy(logits, labels)
