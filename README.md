@@ -67,18 +67,20 @@ Two-tower retrieval: a `UserTower` and an `ItemTower`, each independently embedd
 
 ## Serving Layer
 
-Two deployment paths are implemented:
-
-**Path B — AKS / Kubernetes (non-managed):**
-- `src/serve.py` — `RecommenderService` loads the model and precomputes item embeddings once at startup. Handles three customer cases: warm (model prediction), cold (no purchase history → popularity fallback), unknown (not in dataset → popularity fallback)
+**AKS / Kubernetes (Path B — non-managed, fully implemented):**
+- `src/serve.py` — `RecommenderService` downloads the model checkpoint and feature parquets from Azure Blob Storage at container startup using `AZURE_STORAGE_CONNECTION_STRING` and `MODEL_VERSION` env vars. Precomputes item embeddings once. Handles three customer cases: warm (model prediction), cold (no purchase history → popularity fallback), unknown (not in dataset → popularity fallback)
 - `src/api.py` — FastAPI REST API exposing `/health`, `/recommend`, `/recommend/batch` on port 8080
-- `Dockerfile` — CPU-only serving container (2.66GB, uses `requirements-serve.txt`)
-- `experiments/k8s_deployment_example.yml` — Kubernetes Deployment manifest (2 replicas, 1 CPU / 2GB RAM)
-- `experiments/k8s_service.yml` — Kubernetes Service manifest exposing a public load balancer
+- `Dockerfile` — Code-only CPU serving container. No data or checkpoint baked in — everything is pulled from Blob Storage at startup so the image never needs rebuilding when the model retrains
+- `experiments/k8s_deployment.yml` — Kubernetes Deployment manifest (1 replica, 1 CPU / 2GB RAM, Blob Storage credentials injected via K8s Secret)
+- `experiments/k8s_service.yml` — Kubernetes Service manifest exposing a public LoadBalancer
 
-**Path A — Azure ML Managed Online Endpoint:**
-- Azure ML builds and manages the container automatically
-- Requires a `score.py` with `init()` / `run()` functions (not yet built)
+**Live endpoint:** `http://20.161.92.233`
+```bash
+curl http://20.161.92.233/health
+curl -X POST http://20.161.92.233/recommend \
+  -H "Content-Type: application/json" \
+  -d '{"customer_id": "<customer-id>"}'
+```
 
 ## Azure MLOps Setup
 
@@ -89,10 +91,31 @@ All infrastructure is in Azure, connected to the `JHU_rec_sys` ML workspace:
 | Storage Account | `jhurecsys0742245294` | Blob Storage — raw data, features, checkpoints |
 | Data Asset | `hm-raw-data:1` | Versioned pointer to raw CSVs |
 | Data Asset | `hm-processed-data:1/2/3` | Versioned pointers to processed feature folders |
-| Container Registry | `hmrecommenderacr` | Stores Docker image |
+| Model | `hm-two-tower:1` | Registered model in Azure ML Model Registry |
+| Compute Cluster | `hm-training-cluster` | Auto-scaling VMs for training jobs (min 0 nodes) |
+| Environment | `hm-recommender-training:1` | Conda environment for training jobs |
+| Container Registry | `hmrecommenderacr` | Stores Docker serving images |
 | AKS Cluster | `hm-recommender-aks` | Runs serving container |
 
 Training runs log metrics (train loss, val loss, hyperparameters, data version) to **Azure ML Experiments** via `azureml-core` — visible in Azure ML Studio under Jobs. When run locally, logging degrades gracefully to console output.
+
+**Submitting a training pipeline run:**
+```bash
+python azure/pipeline.py --data-version v1  # or v2, v3
+```
+
+## CI/CD
+
+Two GitHub Actions workflows automate the development loop:
+
+| Workflow | Trigger | Action |
+|---|---|---|
+| `ci.yml` | Pull request to `main` | Installs deps, runs model smoke test (forward pass with synthetic data) |
+| `cd.yml` | Merge to `main` | Builds Docker image, pushes to ACR, deploys to AKS |
+
+**Required GitHub Secrets:** `ACR_USERNAME`, `ACR_PASSWORD`, `KUBE_CONFIG`
+
+See [CICD.md](CICD.md) for the full playbook: secret setup, how to ship a new model feature branch, how to swap a new trained model version on the live endpoint without rebuilding the image.
 
 ## `temporal_features.py`: Built, Tested, Currently Unused
 
@@ -123,4 +146,4 @@ Encodes the entire item catalog once, scores every eval-split user against it vi
 - Re-enable temporal features with a fixed recency bucket design (original collapsed to 3 near-useless values)
 - CLIP-based image embeddings for articles — useful for item cold start since new articles have photos but no sales history
 - A lightweight reranking stage on top of retrieval candidates
-- Azure ML Pipeline to automate the full `sample → preprocess → train → evaluate` chain on a schedule
+- Automated pipeline trigger on a schedule or data arrival event (currently triggered manually)
