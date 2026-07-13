@@ -41,31 +41,62 @@ def _blob_download(container_client, blob_path: str, local_path: Path) -> None:
         f.write(container_client.download_blob(blob_path).readall())
 
 
-def _fetch_artifacts_from_blob(model_version: str, tmp_dir: Path) -> tuple[Path, Path]:
+def _resolve_from_registry() -> tuple[str, str]:
+    """Query the Azure ML Model Registry for checkpoint blob path and data version.
+
+    Reads MODEL_NAME and MODEL_VERSION (registry integer version, e.g. "1") from
+    env vars, then returns the values of the model's tags:
+      checkpoint_blob_path  — e.g. "checkpoints/v1/two_tower.pt"
+      data_version          — e.g. "v1"
+
+    These tags are written by azure/pipeline.py when the model is registered after
+    training, so this is the single source of truth for what artifact is being served.
+
+    Auth via DefaultAzureCredential: set AZURE_CLIENT_ID / AZURE_CLIENT_SECRET /
+    AZURE_TENANT_ID in the pod's env (from a K8s Secret) for a service principal,
+    or attach a managed identity to the AKS node pool.
+    """
+    from azure.ai.ml import MLClient
+    from azure.identity import DefaultAzureCredential
+
+    model_name    = os.environ.get("MODEL_NAME", "hm-two-tower")
+    model_version = os.environ.get("MODEL_VERSION", "1")
+
+    ml_client = MLClient(
+        credential=DefaultAzureCredential(),
+        subscription_id=os.environ["AZURE_SUBSCRIPTION_ID"],
+        resource_group_name=os.environ["AZURE_RESOURCE_GROUP"],
+        workspace_name=os.environ["AZURE_ML_WORKSPACE"],
+    )
+    model = ml_client.models.get(name=model_name, version=model_version)
+    return model.tags["checkpoint_blob_path"], model.tags["data_version"]
+
+
+def _fetch_artifacts_from_blob(
+    checkpoint_blob_path: str, data_version: str, tmp_dir: Path
+) -> tuple[Path, Path]:
     """Download checkpoint and processed feature files from Azure Blob Storage.
 
-    Reads three env vars set by the Kubernetes Deployment:
-      AZURE_STORAGE_CONNECTION_STRING  — full connection string (from a K8s Secret)
-      BLOB_CONTAINER                   — blob container name (workspaceblobstore container)
-      MODEL_VERSION                    — e.g. 'v1' (selects processed/v1/ and checkpoints/v1/)
+    Reads env vars AZURE_STORAGE_CONNECTION_STRING and BLOB_CONTAINER (set by the
+    Kubernetes Deployment). The paths come from the Model Registry tags, not from
+    a hardcoded version string.
 
     Returns (checkpoint_path, processed_dir) pointing at the downloaded files.
     """
     from azure.storage.blob import BlobServiceClient
 
-    conn_str   = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
-    container  = os.environ.get("BLOB_CONTAINER", "azureml")
-    version    = model_version
+    conn_str  = os.environ["AZURE_STORAGE_CONNECTION_STRING"]
+    container = os.environ.get("BLOB_CONTAINER", "azureml")
 
     client = BlobServiceClient.from_connection_string(conn_str).get_container_client(container)
 
     checkpoint_path = tmp_dir / "two_tower.pt"
-    _blob_download(client, f"checkpoints/{version}/two_tower.pt", checkpoint_path)
+    _blob_download(client, checkpoint_blob_path, checkpoint_path)
 
     processed_dir = tmp_dir / "processed"
     for fname in ["articles_features.parquet", "customers_features.parquet",
                   "train.parquet", "encoders.pkl"]:
-        _blob_download(client, f"processed/{version}/{fname}", processed_dir / fname)
+        _blob_download(client, f"processed/{data_version}/{fname}", processed_dir / fname)
 
     return checkpoint_path, processed_dir
 
@@ -77,10 +108,13 @@ class RecommenderService:
         # If AZURE_STORAGE_CONNECTION_STRING is set, pull artifacts from Blob Storage.
         # Otherwise fall back to local paths (local dev / unit tests).
         if os.environ.get("AZURE_STORAGE_CONNECTION_STRING"):
-            model_version = os.environ.get("MODEL_VERSION", "v1")
-            print(f"Downloading model artifacts from Blob Storage (version={model_version})...")
+            print("Querying Azure ML Model Registry for artifact locations...")
+            checkpoint_blob_path, data_version = _resolve_from_registry()
+            print(f"  checkpoint: {checkpoint_blob_path}  data_version: {data_version}")
             tmp_dir = Path(tempfile.mkdtemp(prefix="hm_serve_"))
-            checkpoint_path, processed_dir = _fetch_artifacts_from_blob(model_version, tmp_dir)
+            checkpoint_path, processed_dir = _fetch_artifacts_from_blob(
+                checkpoint_blob_path, data_version, tmp_dir
+            )
             print("Download complete.")
         else:
             run_name = run_name or f"{CONFIG.sample_weeks}w"
@@ -91,6 +125,8 @@ class RecommenderService:
 
         article_features = pd.read_parquet(processed_dir / "articles_features.parquet")
         customer_features = pd.read_parquet(processed_dir / "customers_features.parquet")
+        # Only load the two columns needed to determine warm customers — avoids
+        # reading the full transactions table (which can be hundreds of MB).
         train_df = pd.read_parquet(processed_dir / "train.parquet", columns=["customer_idx", "article_idx"])
 
         # Encode the whole catalog ONCE — this is the expensive part this
@@ -119,7 +155,9 @@ class RecommenderService:
         if k > MAX_K:
             raise ValueError(f"k={k} exceeds the precomputed fallback size MAX_K={MAX_K}")
 
+        # reindex (not .loc) so missing customer_ids produce NaN rows instead of raising KeyError.
         rows = self.customer_features.reindex(customer_ids)
+        # NaN in customer_idx means this customer_id was never seen during training.
         known_mask = rows["customer_idx"].notna().to_numpy()
         fallback_ids = self._popularity_fallback_ids(k)
 

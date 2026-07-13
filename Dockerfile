@@ -5,6 +5,7 @@
 # parquets from Azure Blob Storage using the AZURE_STORAGE_CONNECTION_STRING
 # and MODEL_VERSION environment variables injected by the Kubernetes Deployment.
 
+# slim variant strips dev tools and docs — keeps the image small for faster AKS pulls.
 FROM python:3.13-slim
 
 WORKDIR /app

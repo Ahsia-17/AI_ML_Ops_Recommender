@@ -22,11 +22,11 @@ service: RecommenderService = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Loading the model + encoding the full catalog happens ONCE here,
-    # when the container starts — not per request. This is also why the
-    # Kubernetes readiness probe needs a startup delay: until this
-    # finishes, the pod can accept traffic but isn't actually ready to
-    # serve a real recommendation yet.
+    # FastAPI's lifespan hook: code before yield runs at startup, code after yield
+    # runs at shutdown. Loading the model here means it happens once per process,
+    # not once per request.
+    # global is needed because `service` is declared at module scope — without it,
+    # Python would treat this as a local variable and the route handlers couldn't see it.
     global service
     service = RecommenderService()
     yield

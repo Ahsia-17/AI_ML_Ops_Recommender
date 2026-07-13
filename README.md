@@ -23,7 +23,7 @@ To simulate a production system with live data arrivals, we treat three date-ran
 | v2 | 2020-07-31 | Second month |
 | v3 | 2020-08-31 | Third month — most recent |
 
-Each version has its own processed feature folder in Blob Storage, a registered Azure ML Data Asset (`hm-processed-data:1/2/3`), a trained model checkpoint, and metrics tracked in Azure ML Experiments. This demonstrates the full MLOps data lineage chain: raw data → versioned features → model → metrics.
+Each version has its own processed feature folder in Blob Storage and a registered Azure ML Data Asset (`hm-processed-data:1/2/3`). The pipeline is designed to train and evaluate a separate checkpoint per version, demonstrating the full MLOps data lineage chain: raw data → versioned features → model → metrics. Currently only v1 has a trained checkpoint deployed to AKS; v2 and v3 are ready to train via `python azure/pipeline.py --data-version v2`.
 
 ## Pipeline
 
