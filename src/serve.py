@@ -34,6 +34,14 @@ from src.evaluate import (
 
 MAX_K = max(CONFIG.top_k)
 
+_IMAGE_BASE_URL = os.environ.get("IMAGE_BASE_URL", "").rstrip("/")
+
+
+def _image_url(article_id: str) -> str:
+    if not _IMAGE_BASE_URL:
+        return ""
+    return f"{_IMAGE_BASE_URL}/{article_id[:3]}/{article_id}.jpg"
+
 
 def _blob_download(container_client, blob_path: str, local_path: Path) -> None:
     local_path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,6 +106,13 @@ def _fetch_artifacts_from_blob(
                   "train.parquet", "encoders.pkl"]:
         _blob_download(client, f"processed/{data_version}/{fname}", processed_dir / fname)
 
+    clip_blob = "processed/articles_clip_embeddings.parquet"
+    try:
+        _blob_download(client, clip_blob, processed_dir / "articles_clip_embeddings.parquet")
+        print("  CLIP embeddings downloaded.")
+    except Exception:
+        print("  No CLIP embeddings found in Blob — skipping.")
+
     return checkpoint_path, processed_dir
 
 
@@ -124,6 +139,11 @@ class RecommenderService:
         self.model = load_model(self.device, checkpoint_path=checkpoint_path)
 
         article_features = pd.read_parquet(processed_dir / "articles_features.parquet")
+        clip_path = processed_dir / "articles_clip_embeddings.parquet"
+        if clip_path.exists():
+            article_features = article_features.drop(columns=["clip_embedding"], errors="ignore")
+            clip_df = pd.read_parquet(clip_path)[["article_id", "clip_embedding"]]
+            article_features = article_features.merge(clip_df, on="article_id", how="left")
         customer_features = pd.read_parquet(processed_dir / "customers_features.parquet")
         # Only load the two columns needed to determine warm customers — avoids
         # reading the full transactions table (which can be hundreds of MB).
@@ -133,6 +153,7 @@ class RecommenderService:
         # class exists to amortize across many requests.
         self.item_emb, self.catalog_article_idx = encode_catalog(self.model, article_features, self.device)
         self.article_id_by_idx = article_features.set_index("article_idx")["article_id"]
+        self.article_image_url = {aid: _image_url(aid) for aid in self.article_id_by_idx.values}
 
         # Customers with no purchase history in train get the popularity
         # fallback instead of a prediction from an untrained embedding —
@@ -167,6 +188,7 @@ class RecommenderService:
                 results[i] = {
                     "customer_id": customer_ids[i],
                     "recommendations": fallback_ids,
+                    "image_urls": [self.article_image_url.get(aid, "") for aid in fallback_ids],
                     "source": "popularity_fallback",
                     "reason": "unknown_customer",
                 }
@@ -181,9 +203,11 @@ class RecommenderService:
             )
             for pos, customer_idx, rec_row in zip(known_positions, encoded_customer_idx, topk_article_idx):
                 is_warm = customer_idx in self.warm_customer_idx
+                rec_ids = self.article_id_by_idx.loc[rec_row].tolist()
                 results[pos] = {
                     "customer_id": customer_ids[pos],
-                    "recommendations": self.article_id_by_idx.loc[rec_row].tolist(),
+                    "recommendations": rec_ids,
+                    "image_urls": [self.article_image_url.get(aid, "") for aid in rec_ids],
                     "source": "model" if is_warm else "popularity_fallback",
                     "reason": None if is_warm else "no_purchase_history",
                 }

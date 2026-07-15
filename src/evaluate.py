@@ -8,13 +8,14 @@ is reported alongside the model so the numbers have a reference point.
 """
 
 import argparse
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import torch
 
 from src.config import CHECKPOINTS_DIR, CONFIG, PROCESSED_DIR
-from src.data.dataset import ARTICLE_FEATURE_COLS, CUSTOMER_FEATURE_COLS
+from src.data.dataset import ARTICLE_FEATURE_COLS, CUSTOMER_FEATURE_COLS, _clip_column_to_tensor
 from src.models.two_tower import TwoTowerModel
 
 # Score users in chunks to avoid OOM when the full user×item similarity matrix
@@ -24,7 +25,10 @@ USER_SCORE_CHUNK = 1024
 
 def load_model(device, checkpoint_path) -> TwoTowerModel:
     ckpt = torch.load(checkpoint_path, map_location=device, weights_only=False)
-    model = TwoTowerModel(ckpt["vocab_sizes"], ckpt["embedding_dim"], ckpt["tower_hidden_dims"], ckpt["dropout"])
+    model = TwoTowerModel(
+        ckpt["vocab_sizes"], ckpt["embedding_dim"], ckpt["tower_hidden_dims"], ckpt["dropout"],
+        use_clip=ckpt.get("use_clip", False),
+    )
     model.load_state_dict(ckpt["model_state_dict"])
     model.to(device).eval()
     return model
@@ -39,6 +43,8 @@ def encode_catalog(model, article_features: pd.DataFrame, device) -> tuple[torch
     feats.update(
         {col: torch.as_tensor(article_features[col].to_numpy(), dtype=torch.long, device=device) for col in ARTICLE_FEATURE_COLS}
     )
+    if "clip_embedding" in article_features.columns:
+        feats["clip_embedding"] = _clip_column_to_tensor(article_features["clip_embedding"], device=device)
     with torch.no_grad():
         item_emb = model.encode_items(feats)
     return item_emb, article_features["article_idx"].to_numpy()
@@ -146,7 +152,6 @@ def main():
     )
     args = parser.parse_args()
 
-    from pathlib import Path
     processed_dir = Path(args.processed_dir) if args.processed_dir else PROCESSED_DIR
 
     checkpoint_path = args.checkpoint or (CHECKPOINTS_DIR / args.run_name / "two_tower.pt")

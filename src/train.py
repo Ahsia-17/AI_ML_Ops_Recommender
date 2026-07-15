@@ -11,6 +11,7 @@ import argparse
 import json
 import pickle
 import random
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -57,7 +58,7 @@ def run_epoch(model, dataset: TwoTowerDataset, batch_size, device, optimizer=Non
     return total_loss / total_examples
 
 
-def save_checkpoint(model, vocab_sizes, path):
+def save_checkpoint(model, vocab_sizes, path, use_clip: bool = False):
     # vocab_sizes and architecture config are saved alongside weights so the model
     # can be reconstructed at inference time without needing the original config file.
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -68,6 +69,7 @@ def save_checkpoint(model, vocab_sizes, path):
             "embedding_dim": CONFIG.embedding_dim,
             "tower_hidden_dims": CONFIG.tower_hidden_dims,
             "dropout": CONFIG.dropout,
+            "use_clip": use_clip,
         },
         path,
     )
@@ -105,17 +107,21 @@ def main():
              "Overrides the default checkpoints/<run-name>/ path. "
              "Set by Azure ML Pipeline to a mounted output folder in Blob Storage.",
     )
+    parser.add_argument(
+        "--use-clip", action="store_true",
+        help="Include CLIP multi-modal embeddings in the item tower. "
+             "Requires articles_features.parquet to contain a clip_embedding column "
+             "(run preprocess.py after embed_images.py).",
+    )
     args = parser.parse_args()
 
     if args.processed_dir:
-        from pathlib import Path
         processed_dir = Path(args.processed_dir)
     elif args.data_version:
         processed_dir = PROCESSED_DIR / args.data_version
     else:
         processed_dir = PROCESSED_DIR
 
-    from pathlib import Path
     run_dir = Path(args.checkpoint_dir) if args.checkpoint_dir else (CHECKPOINTS_DIR / args.run_name)
     checkpoint_path = run_dir / "two_tower.pt"
     history_path = run_dir / "training_history.json"
@@ -127,6 +133,14 @@ def main():
 
     customer_features = pd.read_parquet(processed_dir / "customers_features.parquet")
     article_features = pd.read_parquet(processed_dir / "articles_features.parquet")
+
+    if args.use_clip:
+        if "clip_embedding" not in article_features.columns:
+            clip_path = PROCESSED_DIR / "articles_clip_embeddings.parquet"
+            clip_df = pd.read_parquet(clip_path)[["article_id", "clip_embedding"]]
+            article_features = article_features.merge(clip_df, on="article_id", how="left")
+        print(f"CLIP embeddings: {article_features['clip_embedding'].notna().sum():,}/{len(article_features):,} articles")
+
     train_df = pd.read_parquet(processed_dir / "train.parquet")
     val_df = pd.read_parquet(processed_dir / "val.parquet")
     with open(processed_dir / "encoders.pkl", "rb") as f:
@@ -138,7 +152,7 @@ def main():
     train_dataset = TwoTowerDataset(train_df, customer_features, article_features)
     val_dataset = TwoTowerDataset(val_df, customer_features, article_features)
 
-    model = TwoTowerModel(vocab_sizes, CONFIG.embedding_dim, CONFIG.tower_hidden_dims, CONFIG.dropout).to(device)
+    model = TwoTowerModel(vocab_sizes, CONFIG.embedding_dim, CONFIG.tower_hidden_dims, CONFIG.dropout, use_clip=args.use_clip).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=CONFIG.lr, weight_decay=CONFIG.weight_decay)
 
     # Get Azure ML run context if running inside an Azure ML job.
@@ -147,21 +161,20 @@ def main():
     try:
         from azureml.core.run import Run
         aml_run = Run.get_context()
-        is_aml = hasattr(aml_run, "log")
-        if is_aml:
+        if hasattr(aml_run, "log"):
             print("Azure ML run context detected — logging metrics to Azure ML Experiments")
+        else:
+            aml_run = None
     except ImportError:
         aml_run = None
-        is_aml = False
 
     def log_metric(name, value, step=None):
-        if is_aml:
+        if aml_run is not None:
             aml_run.log(name, value)
-        # Always print so local runs still show progress
         print(f"  {name}={value:.4f}" + (f" (step {step})" if step else ""))
 
     # Log hyperparameters once at run start
-    if is_aml:
+    if aml_run is not None:
         aml_run.log("epochs", args.epochs)
         aml_run.log("batch_size", args.batch_size)
         aml_run.log("embedding_dim", CONFIG.embedding_dim)
@@ -183,15 +196,15 @@ def main():
 
         if args.checkpoint_every and epoch % args.checkpoint_every == 0:
             epoch_path = run_dir / f"two_tower_epoch{epoch}.pt"
-            save_checkpoint(model, vocab_sizes, epoch_path)
+            save_checkpoint(model, vocab_sizes, epoch_path, use_clip=args.use_clip)
             print(f"  saved {epoch_path}")
 
-    save_checkpoint(model, vocab_sizes, checkpoint_path)
+    save_checkpoint(model, vocab_sizes, checkpoint_path, use_clip=args.use_clip)
     with open(history_path, "w") as f:
         json.dump(history, f, indent=2)
     print(f"Saved checkpoint to {checkpoint_path} and history to {history_path}")
 
-    if is_aml:
+    if aml_run is not None:
         aml_run.complete()
 
 

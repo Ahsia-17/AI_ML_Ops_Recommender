@@ -17,7 +17,7 @@ from pydantic import BaseModel
 
 from src.serve import RecommenderService
 
-service: RecommenderService = None
+service: RecommenderService | None = None
 
 
 @asynccontextmanager
@@ -48,6 +48,7 @@ class BatchRecommendRequest(BaseModel):
 class RecommendResponse(BaseModel):
     customer_id: str
     recommendations: list[str]
+    image_urls: list[str] = []
     source: str
     reason: str | None = None
 

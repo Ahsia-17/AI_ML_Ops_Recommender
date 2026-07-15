@@ -64,19 +64,30 @@ class FeatureEmbedder(nn.Module):
 
 
 class Tower(nn.Module):
-    def __init__(self, feature_vocab_sizes: dict, embedding_dim: int, hidden_dims: tuple, dropout: float):
+    def __init__(self, feature_vocab_sizes: dict, embedding_dim: int, hidden_dims: tuple, dropout: float, clip_dim: int = 0):
         super().__init__()
         self.embedder = FeatureEmbedder(feature_vocab_sizes, embedding_dim)
-        self.mlp = _mlp(self.embedder.output_dim, hidden_dims, embedding_dim, dropout)
+        mlp_input_dim = self.embedder.output_dim
+        self.clip_projection = None
+        if clip_dim > 0:
+            # Project 512-dim CLIP vector into the same embedding space as the
+            # categorical features before concatenating, so the MLP sees a
+            # uniform-scale input regardless of which modalities are present.
+            self.clip_projection = nn.Linear(clip_dim, embedding_dim, bias=False)
+            mlp_input_dim += embedding_dim
+        self.mlp = _mlp(mlp_input_dim, hidden_dims, embedding_dim, dropout)
 
     def forward(self, features: dict) -> torch.Tensor:
         x = self.embedder(features)
+        if self.clip_projection is not None and "clip_embedding" in features:
+            clip_feat = self.clip_projection(features["clip_embedding"].float())
+            x = torch.cat([x, clip_feat], dim=-1)
         x = self.mlp(x)
         return F.normalize(x, p=2, dim=-1)
 
 
 class TwoTowerModel(nn.Module):
-    def __init__(self, vocab_sizes: dict, embedding_dim: int, hidden_dims: tuple, dropout: float):
+    def __init__(self, vocab_sizes: dict, embedding_dim: int, hidden_dims: tuple, dropout: float, use_clip: bool = False):
         super().__init__()
 
         customer_vocab_sizes = {
@@ -102,7 +113,7 @@ class TwoTowerModel(nn.Module):
         assert set(article_vocab_sizes) == {"article_idx", *ARTICLE_FEATURE_COLS}
 
         self.user_tower = Tower(customer_vocab_sizes, embedding_dim, hidden_dims, dropout)
-        self.item_tower = Tower(article_vocab_sizes, embedding_dim, hidden_dims, dropout)
+        self.item_tower = Tower(article_vocab_sizes, embedding_dim, hidden_dims, dropout, clip_dim=512 if use_clip else 0)
 
     def forward(self, customer_features: dict, article_features: dict) -> tuple[torch.Tensor, torch.Tensor]:
         user_emb = self.user_tower(customer_features)

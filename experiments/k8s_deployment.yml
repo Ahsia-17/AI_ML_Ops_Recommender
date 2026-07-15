@@ -4,6 +4,8 @@ metadata:
   name: hm-two-tower-recommender
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: hm-two-tower-recommender
@@ -14,7 +16,7 @@ spec:
     spec:
       containers:
         - name: hm-two-tower-recommender
-          image: hmrecommenderacr.azurecr.io/hm-recommender:v1
+          image: hmrecommenderacr.azurecr.io/hm-recommender:v3
           ports:
             - containerPort: 8080
           env:
@@ -67,10 +69,10 @@ spec:
           resources:
             requests:
               cpu: "500m"
-              memory: "1Gi"
+              memory: "2Gi"
             limits:
               cpu: "1000m"
-              memory: "2Gi"
+              memory: "4Gi"
           # Container downloads 200MB+ from Blob Storage at startup —
           # give it time before the liveness probe starts checking.
           startupProbe:

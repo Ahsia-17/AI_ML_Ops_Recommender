@@ -6,6 +6,7 @@ other items in a batch as in-batch negatives (standard two-tower
 retrieval training), so this dataset only needs to emit positives.
 """
 
+import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import Dataset
@@ -16,6 +17,16 @@ CUSTOMER_NUMERIC_COLS = ["age_bucket", "fn_flag", "active_flag", "postal_code_bu
 
 CUSTOMER_FEATURE_COLS = CUSTOMER_NUMERIC_COLS + [f"{c}_idx" for c in CUSTOMER_CAT_COLS]
 ARTICLE_FEATURE_COLS = [f"{c}_idx" for c in ARTICLE_CAT_COLS]
+
+
+def _clip_column_to_tensor(series: pd.Series, device=None) -> torch.Tensor:
+    arr = np.array(
+        [np.array(e, dtype=np.float32) if isinstance(e, (list, np.ndarray)) else np.zeros(512, dtype=np.float32)
+         for e in series.tolist()],
+        dtype=np.float32,
+    )
+    t = torch.as_tensor(arr)
+    return t.to(device) if device is not None else t
 
 
 class TwoTowerDataset(Dataset):
@@ -40,6 +51,9 @@ class TwoTowerDataset(Dataset):
         self.article_feats = {
             f"{col}_idx": torch.as_tensor(merged[f"{col}_idx"].to_numpy(), dtype=torch.long) for col in ARTICLE_CAT_COLS
         }
+        self.clip_embedding: torch.Tensor | None = None
+        if "clip_embedding" in merged.columns:
+            self.clip_embedding = _clip_column_to_tensor(merged["clip_embedding"])
 
     def __len__(self):
         return len(self.customer_idx)
@@ -49,6 +63,8 @@ class TwoTowerDataset(Dataset):
         customer.update({k: v[i] for k, v in self.customer_feats.items()})
         article = {"article_idx": self.article_idx[i]}
         article.update({k: v[i] for k, v in self.article_feats.items()})
+        if self.clip_embedding is not None:
+            article["clip_embedding"] = self.clip_embedding[i]
         return customer, article
 
     def iter_batches(self, batch_size: int, shuffle: bool = True, drop_last: bool = True, device=None):
@@ -63,6 +79,8 @@ class TwoTowerDataset(Dataset):
             customer.update({k: v[idx] for k, v in self.customer_feats.items()})
             article = {"article_idx": self.article_idx[idx]}
             article.update({k: v[idx] for k, v in self.article_feats.items()})
+            if self.clip_embedding is not None:
+                article["clip_embedding"] = self.clip_embedding[idx]
             if device is not None:
                 customer = {k: v.to(device, non_blocking=True) for k, v in customer.items()}
                 article = {k: v.to(device, non_blocking=True) for k, v in article.items()}
