@@ -69,7 +69,7 @@ k = st.sidebar.slider("Recommendations", min_value=4, max_value=24, value=12, st
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
-st.title("H&M Product Recommendations")
+st.title("Picked for you")
 
 with st.spinner("Fetching recommendations..."):
     try:
