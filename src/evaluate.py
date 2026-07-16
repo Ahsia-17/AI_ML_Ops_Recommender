@@ -154,12 +154,26 @@ def main():
 
     processed_dir = Path(args.processed_dir) if args.processed_dir else PROCESSED_DIR
 
+    try:
+        from azureml.core.run import Run
+        aml_run = Run.get_context()
+        if not hasattr(aml_run, "log"):
+            aml_run = None
+    except ImportError:
+        aml_run = None
+
     checkpoint_path = args.checkpoint or (CHECKPOINTS_DIR / args.run_name / "two_tower.pt")
     device = torch.device(CONFIG.device if torch.cuda.is_available() else "cpu")
     model = load_model(device, checkpoint_path=checkpoint_path)
 
     customer_features = pd.read_parquet(processed_dir / "customers_features.parquet")
     article_features = pd.read_parquet(processed_dir / "articles_features.parquet")
+
+    if model.item_tower.clip_projection is not None:
+        clip_path = processed_dir / "articles_clip_embeddings.parquet"
+        article_features = article_features.drop(columns=["clip_embedding"], errors="ignore")
+        clip_df = pd.read_parquet(clip_path)[["article_id", "clip_embedding"]]
+        article_features = article_features.merge(clip_df, on="article_id", how="left")
     train_df = pd.read_parquet(processed_dir / "train.parquet")
     eval_df = pd.read_parquet(processed_dir / f"{args.split}.parquet")
 
@@ -176,16 +190,21 @@ def main():
     print(f"Evaluated {metrics['num_users_evaluated']:,} users on '{args.split}' split")
     for k in CONFIG.top_k:
         print(f"  Recall@{k}: {metrics['recall'][k]:.4f}   NDCG@{k}: {metrics['ndcg'][k]:.4f}   MAP@{k}: {metrics['map'][k]:.4f}")
+        if aml_run is not None:
+            aml_run.log(f"recall@{k}", metrics["recall"][k])
+            aml_run.log(f"ndcg@{k}", metrics["ndcg"][k])
+            aml_run.log(f"map@{k}", metrics["map"][k])
 
     pop_items = popularity_baseline(train_df, max_k)
     pop_items_arr = np.array(pop_items)
-    # Tile the same popularity ranking into a (num_users × k) matrix so it can
-    # be passed to evaluate_rankings in the same format as the model's output.
     pop_topk = np.tile(pop_items_arr, (len(user_ids), 1))
     pop_metrics = evaluate_rankings(pop_topk, ground_truth, user_ids, CONFIG.top_k)
     print("Most-popular-items baseline:")
     for k in CONFIG.top_k:
         print(f"  Recall@{k}: {pop_metrics['recall'][k]:.4f}   NDCG@{k}: {pop_metrics['ndcg'][k]:.4f}   MAP@{k}: {pop_metrics['map'][k]:.4f}")
+        if aml_run is not None:
+            aml_run.log(f"baseline_recall@{k}", pop_metrics["recall"][k])
+            aml_run.log(f"baseline_map@{k}", pop_metrics["map"][k])
 
     warm_customers = set(train_df["customer_idx"])
     hybrid_topk = apply_cold_start_fallback(topk_article_idx, user_ids, warm_customers, pop_items_arr)
@@ -193,6 +212,13 @@ def main():
     print("Model + popularity fallback for cold-start customers:")
     for k in CONFIG.top_k:
         print(f"  Recall@{k}: {hybrid_metrics['recall'][k]:.4f}   NDCG@{k}: {hybrid_metrics['ndcg'][k]:.4f}   MAP@{k}: {hybrid_metrics['map'][k]:.4f}")
+        if aml_run is not None:
+            aml_run.log(f"hybrid_recall@{k}", hybrid_metrics["recall"][k])
+            aml_run.log(f"hybrid_map@{k}", hybrid_metrics["map"][k])
+
+    if aml_run is not None:
+        aml_run.log("num_users_evaluated", metrics["num_users_evaluated"])
+        aml_run.complete()
 
 
 if __name__ == "__main__":
