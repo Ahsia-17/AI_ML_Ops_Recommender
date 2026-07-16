@@ -34,7 +34,7 @@ from azure.identity import AzureCliCredential
 SUBSCRIPTION_ID = "d9431e53-775d-40b1-9936-6dfa5af12ee4"
 RESOURCE_GROUP  = "resource_jhu_rec_sys"
 WORKSPACE_NAME  = "JHU_rec_sys"
-CPU_COMPUTE     = "hm-training-cluster-lg"
+CPU_COMPUTE     = "large-cluster"
 GPU_COMPUTE     = "hm-gpu-cluster"
 ENVIRONMENT     = "azureml:hm-recommender-training:1"
 EXPERIMENT      = "hm-two-tower-recommender"
