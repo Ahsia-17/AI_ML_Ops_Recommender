@@ -136,7 +136,7 @@ def main():
 
     if args.use_clip:
         if "clip_embedding" not in article_features.columns:
-            clip_path = PROCESSED_DIR / "articles_clip_embeddings.parquet"
+            clip_path = processed_dir / "articles_clip_embeddings.parquet"
             clip_df = pd.read_parquet(clip_path)[["article_id", "clip_embedding"]]
             article_features = article_features.merge(clip_df, on="article_id", how="left")
         print(f"CLIP embeddings: {article_features['clip_embedding'].notna().sum():,}/{len(article_features):,} articles")
