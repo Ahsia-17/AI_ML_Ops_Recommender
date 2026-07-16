@@ -1,44 +1,44 @@
 """Azure ML Pipeline for the H&M two-tower recommender.
 
-Submits two sequential command jobs to Azure ML:
-  train → evaluate
+Full end-to-end pipeline: raw data → sample → preprocess → train → evaluate → register.
+No local data prep required — everything runs on Azure compute.
 
-Sample and preprocess are already done locally and their outputs are
-uploaded to Blob Storage as versioned Data Assets (hm-processed-data:1/2/3).
-The pipeline mounts those Data Assets as read-only inputs to the compute VM
-so the scripts see a local directory path — no Blob Storage SDK needed inside
-the training scripts.
+Prerequisites (one-time setup):
+  Register the raw CSVs as a Data Asset:
+    az ml data create --name hm-raw-data --type uri_folder \\
+      --path azureml://datastores/workspaceblobstore/paths/raw/
 
-The train job writes its checkpoint to a Blob Storage output folder.
-The evaluate job reads from that same folder.
-
-Note: the azure-ai-ml @pipeline decorator was not used because it relies on
-Python bytecode inspection that is broken in Python 3.13. Sequential
-create_or_update + stream() calls achieve the same result.
+  (Optional, for --use-clip) Register pre-computed CLIP embeddings:
+    az ml data create --name hm-clip-embeddings --type uri_folder \\
+      --path azureml://datastores/workspaceblobstore/paths/clip-embeddings/
 
 Usage:
-    python azure/pipeline.py --data-version v1
-    python azure/pipeline.py --data-version v2
-    python azure/pipeline.py --data-version v3
+    # Full pipeline, 26-week window, 30 epochs:
+    python azure/pipeline.py --weeks 26 --epochs 30
+
+    # Full pipeline with CLIP multi-modal embeddings:
+    python azure/pipeline.py --weeks 26 --epochs 30 --use-clip
+
+    # Skip sample + preprocess; use an existing processed Data Asset:
+    python azure/pipeline.py --data-version 52w --epochs 30
 """
 
 import argparse
+from datetime import datetime
 
 from azure.ai.ml import Input, MLClient, Output, command
 from azure.ai.ml.constants import AssetTypes, InputOutputModes
-from azure.ai.ml.entities import Model
+from azure.ai.ml.entities import Data, Model
 from azure.identity import AzureCliCredential
 
 SUBSCRIPTION_ID = "d9431e53-775d-40b1-9936-6dfa5af12ee4"
 RESOURCE_GROUP  = "resource_jhu_rec_sys"
 WORKSPACE_NAME  = "JHU_rec_sys"
-COMPUTE_NAME    = "hm-training-cluster"
+CPU_COMPUTE     = "hm-training-cluster-lg"
+GPU_COMPUTE     = "hm-gpu-cluster"
 ENVIRONMENT     = "azureml:hm-recommender-training:1"
 EXPERIMENT      = "hm-two-tower-recommender"
 DATASTORE_PATH  = "azureml://datastores/workspaceblobstore/paths"
-
-# Maps data_version string to the registered Data Asset version number
-ASSET_VERSION = {"v1": "1", "v2": "2", "v3": "3"}
 
 
 def get_client() -> MLClient:
@@ -53,130 +53,330 @@ def get_client() -> MLClient:
     )
 
 
-def run_pipeline(data_version: str, epochs: int) -> None:
-    client = get_client()
-    asset_ver = ASSET_VERSION[data_version]
+def run_full_pipeline(client: MLClient, weeks: int, epochs: int, use_clip: bool, use_gpu: bool) -> None:
+    """raw data → sample → preprocess → train → evaluate → register."""
+    version = f"{weeks}w-{datetime.now().strftime('%Y%m%d-%H%M')}"
+    compute = GPU_COMPUTE if use_gpu else CPU_COMPUTE
 
-    # Resolve the registered Data Asset for this version (e.g. hm-processed-data:1 for v1).
-    # RO_MOUNT means Azure ML mounts the Blob Storage folder as a read-only local directory
-    # on the compute VM — the training script just sees a normal file path, no SDK calls needed.
+    base_path = f"{DATASTORE_PATH}/pipeline/{version}"
+    sample_path     = f"{base_path}/sample/"
+    processed_path  = f"{base_path}/processed/"
+    checkpoint_path = f"{base_path}/checkpoints/"
+
+    raw_asset = client.data.get(name="hm-raw-data", label="latest")
+    raw_input = Input(
+        type=AssetTypes.URI_FOLDER,
+        path=f"azureml:hm-raw-data:{raw_asset.version}",
+        mode=InputOutputModes.RO_MOUNT,
+    )
+
+    # ── Step 1: Sample ───────────────────────────────────────────────────────
+    print(f"\n>>> [{version}] Step 1/4: sample ({weeks} weeks)")
+    sample_job = client.jobs.create_or_update(
+        command(
+            display_name=f"[{version}] sample",
+            command=(
+                "python -m src.data.sample"
+                " --raw-dir ${{inputs.raw_data}}"
+                " --output ${{outputs.sample}}/transactions_sample.parquet"
+                f" --weeks {weeks}"
+            ),
+            inputs={"raw_data": raw_input},
+            outputs={"sample": Output(type=AssetTypes.URI_FOLDER, path=sample_path)},
+            environment=ENVIRONMENT,
+            compute=compute,
+            code=".",
+            experiment_name=EXPERIMENT,
+            tags={"version": version, "step": "sample"},
+        )
+    )
+    print(f"    Job : {sample_job.name}")
+    print(f"    URL : {sample_job.studio_url}")
+    client.jobs.stream(sample_job.name)
+
+    # ── Step 2: Preprocess ───────────────────────────────────────────────────
+    print(f"\n>>> [{version}] Step 2/4: preprocess")
+    preprocess_job = client.jobs.create_or_update(
+        command(
+            display_name=f"[{version}] preprocess",
+            command=(
+                "python -m src.data.preprocess"
+                " --raw-dir ${{inputs.raw_data}}"
+                " --transactions-path ${{inputs.sample}}/transactions_sample.parquet"
+                " --output-dir ${{outputs.processed}}"
+            ),
+            inputs={
+                "raw_data": raw_input,
+                "sample": Input(type=AssetTypes.URI_FOLDER, path=sample_path, mode=InputOutputModes.RO_MOUNT),
+            },
+            outputs={"processed": Output(type=AssetTypes.URI_FOLDER, path=processed_path)},
+            environment=ENVIRONMENT,
+            compute=compute,
+            code=".",
+            experiment_name=EXPERIMENT,
+            tags={"version": version, "step": "preprocess"},
+        )
+    )
+    print(f"    Job : {preprocess_job.name}")
+    print(f"    URL : {preprocess_job.studio_url}")
+    client.jobs.stream(preprocess_job.name)
+
+    # Register the processed folder as a versioned Data Asset so future runs can
+    # skip sample + preprocess and start directly from here with --data-version.
+    print(f"\n>>> Registering hm-processed-data:{version}")
+    client.data.create_or_update(
+        Data(
+            name="hm-processed-data",
+            version=version,
+            path=processed_path,
+            type=AssetTypes.URI_FOLDER,
+            description=f"Processed H&M features | {weeks}-week window | run {version}",
+        )
+    )
+    print(f"    Done: hm-processed-data:{version}")
+
+    processed_input = Input(
+        type=AssetTypes.URI_FOLDER,
+        path=processed_path,
+        mode=InputOutputModes.RO_MOUNT,
+    )
+
+    # ── Step 3: Train ────────────────────────────────────────────────────────
+    # The freshly generated processed folder doesn't have CLIP embeddings —
+    # preprocess.py doesn't run embed_images.py. Mount the latest existing
+    # hm-processed-data asset (which has articles_clip_embeddings.parquet from
+    # the manual upload) as a separate read-only input and point --clip-dir at it.
+    train_inputs = {"processed_data": processed_input}
+    train_clip_flag = ""
+    if use_clip:
+        clip_source_asset = client.data.get(name="hm-processed-data", label="latest")
+        train_inputs["clip_source"] = Input(
+            type=AssetTypes.URI_FOLDER,
+            path=f"azureml:hm-processed-data:{clip_source_asset.version}",
+            mode=InputOutputModes.RO_MOUNT,
+        )
+        train_clip_flag = " --use-clip --clip-dir ${{inputs.clip_source}}"
+
+    print(f"\n>>> [{version}] Step 3/4: train ({epochs} epochs, clip={use_clip})")
+    train_job = client.jobs.create_or_update(
+        command(
+            display_name=f"[{version}] train ({epochs} epochs)",
+            command=(
+                "python -m src.train"
+                " --processed-dir ${{inputs.processed_data}}"
+                f" --run-name {version}"
+                f" --epochs {epochs}"
+                " --checkpoint-dir ${{outputs.checkpoint}}"
+                f"{train_clip_flag}"
+            ),
+            inputs=train_inputs,
+            outputs={"checkpoint": Output(type=AssetTypes.URI_FOLDER, path=checkpoint_path)},
+            environment=ENVIRONMENT,
+            compute=compute,
+            code=".",
+            experiment_name=EXPERIMENT,
+            tags={"version": version, "step": "train", "use_clip": str(use_clip)},
+        )
+    )
+    print(f"    Job : {train_job.name}")
+    print(f"    URL : {train_job.studio_url}")
+    client.jobs.stream(train_job.name)
+
+    # ── Step 4: Evaluate ─────────────────────────────────────────────────────
+    eval_inputs = {
+        "processed_data": processed_input,
+        "checkpoint": Input(type=AssetTypes.URI_FOLDER, path=checkpoint_path, mode=InputOutputModes.RO_MOUNT),
+    }
+    eval_clip_flag = ""
+    if use_clip:
+        eval_inputs["clip_source"] = train_inputs["clip_source"]
+        eval_clip_flag = " --clip-dir ${{inputs.clip_source}}"
+
+    print(f"\n>>> [{version}] Step 4/4: evaluate")
+    eval_job = client.jobs.create_or_update(
+        command(
+            display_name=f"[{version}] evaluate",
+            command=(
+                "python -m src.evaluate"
+                " --processed-dir ${{inputs.processed_data}}"
+                # Double braces: f-string collapses {{ → { giving ${{inputs.checkpoint}}
+                # which Azure ML resolves to the actual mount path at runtime.
+                f" --checkpoint ${{{{inputs.checkpoint}}}}/two_tower.pt"
+                " --split test"
+                f"{eval_clip_flag}"
+            ),
+            inputs=eval_inputs,
+            environment=ENVIRONMENT,
+            compute=compute,
+            code=".",
+            experiment_name=EXPERIMENT,
+            tags={"version": version, "step": "evaluate"},
+        )
+    )
+    print(f"    Job : {eval_job.name}")
+    print(f"    URL : {eval_job.studio_url}")
+    client.jobs.stream(eval_job.name)
+
+    # ── Register model ────────────────────────────────────────────────────────
+    print(f"\n>>> Registering model: hm-two-tower")
+    registered = client.models.create_or_update(
+        Model(
+            name="hm-two-tower",
+            path=checkpoint_path,
+            description=f"Two-tower retrieval model | {weeks}w window | {epochs} epochs | clip: {use_clip}",
+            tags={
+                "checkpoint_blob_path": f"pipeline/{version}/checkpoints/two_tower.pt",
+                "version": version,
+                "weeks": str(weeks),
+                "epochs": str(epochs),
+                "use_clip": str(use_clip),
+            },
+        )
+    )
+    print(f"    Registered: hm-two-tower:{registered.version}")
+    print(f"    → Set MODEL_VERSION={registered.version} in the k8s deployment to serve this model.")
+    print(f"\nPipeline complete: {version}")
+    print(f"View in Azure ML Studio → Jobs → Experiments → {EXPERIMENT}")
+
+
+def run_train_pipeline(client: MLClient, data_version: str, epochs: int, use_clip: bool, use_gpu: bool) -> None:
+    """Train + evaluate only, starting from an existing hm-processed-data asset."""
+    compute = GPU_COMPUTE if use_gpu else CPU_COMPUTE
+
+    all_versions = list(client.data.list(name="hm-processed-data"))
+    matching = [a for a in all_versions if data_version in (a.path or "") or a.version == data_version]
+    if not matching:
+        raise ValueError(
+            f"No 'hm-processed-data' asset with version or path containing '{data_version}'.\n"
+            f"Run the full pipeline instead: python azure/pipeline.py --weeks N"
+        )
+    asset_ver = matching[0].version
+    print(f"Using hm-processed-data:{asset_ver} (path: {matching[0].path})")
+
+    checkpoint_path = f"{DATASTORE_PATH}/checkpoints/{data_version}/"
     processed_input = Input(
         type=AssetTypes.URI_FOLDER,
         path=f"azureml:hm-processed-data:{asset_ver}",
         mode=InputOutputModes.RO_MOUNT,
     )
 
-    # Where the train job will write its checkpoint in Blob Storage.
-    # The evaluate job mounts the same path as an input to read the checkpoint back.
-    checkpoint_output_path = f"{DATASTORE_PATH}/checkpoints/{data_version}/"
+    train_inputs = {"processed_data": processed_input}
+    train_clip_flag = ""
+    if use_clip:
+        # The existing hm-processed-data asset already has articles_clip_embeddings.parquet.
+        train_inputs["clip_source"] = Input(
+            type=AssetTypes.URI_FOLDER,
+            path=f"azureml:hm-processed-data:{asset_ver}",
+            mode=InputOutputModes.RO_MOUNT,
+        )
+        train_clip_flag = " --use-clip --clip-dir ${{inputs.clip_source}}"
 
-    # ── Step 1: Train ────────────────────────────────────────────────────────
-    print(f"\n>>> Submitting: [{data_version}] train ({epochs} epochs)")
+    print(f"\n>>> [{data_version}] train ({epochs} epochs, clip={use_clip})")
     train_job = client.jobs.create_or_update(
         command(
             display_name=f"[{data_version}] train ({epochs} epochs)",
-            # ${{inputs.x}} and ${{outputs.x}} are Azure ML template placeholders —
-            # the SDK substitutes the actual mounted paths on the compute VM at runtime.
-            # code="." bundles the entire repo directory as the job's code snapshot
-            # and uploads it to Azure ML before the job starts.
             command=(
                 "python -m src.train"
-                " --processed-dir ${{inputs.processed_data}}"  # path to mounted Data Asset
-                f" --data-version {data_version}"              # logged to Azure ML Experiments for traceability
-                f" --run-name {data_version}-26w"
+                " --processed-dir ${{inputs.processed_data}}"
+                f" --data-version {data_version}"
+                f" --run-name {data_version}"
                 f" --epochs {epochs}"
-                " --checkpoint-dir ${{outputs.checkpoint}}"   # Azure ML writes this folder to Blob Storage
+                " --checkpoint-dir ${{outputs.checkpoint}}"
+                f"{train_clip_flag}"
             ),
-            inputs={"processed_data": processed_input},
-            outputs={
-                # URI_FOLDER output: Azure ML creates the folder in Blob Storage and
-                # mounts it as a writable local path on the VM during the job.
-                "checkpoint": Output(
-                    type=AssetTypes.URI_FOLDER,
-                    path=checkpoint_output_path,
-                )
-            },
+            inputs=train_inputs,
+            outputs={"checkpoint": Output(type=AssetTypes.URI_FOLDER, path=checkpoint_path)},
             environment=ENVIRONMENT,
-            compute=COMPUTE_NAME,
+            compute=compute,
             code=".",
             experiment_name=EXPERIMENT,
-            tags={"data_version": data_version, "step": "train"},
+            tags={"data_version": data_version, "step": "train", "use_clip": str(use_clip)},
         )
     )
-    assert train_job.name, "Azure ML did not return a job name for train"
-    print(f"    Job name : {train_job.name}")
-    print(f"    Studio   : {train_job.studio_url}")
-    # stream() blocks until the job finishes — this is what makes the steps sequential.
-    # The evaluate job must not start until the checkpoint exists in Blob Storage.
+    print(f"    Job : {train_job.name}")
+    print(f"    URL : {train_job.studio_url}")
     client.jobs.stream(train_job.name)
-    print(f"    Done: train")
 
-    # ── Step 2: Evaluate ─────────────────────────────────────────────────────
-    # Mounts the same checkpoint folder the train job just wrote as a read-only input.
-    print(f"\n>>> Submitting: [{data_version}] evaluate")
+    eval_inputs = {
+        "processed_data": processed_input,
+        "checkpoint": Input(type=AssetTypes.URI_FOLDER, path=checkpoint_path, mode=InputOutputModes.RO_MOUNT),
+    }
+    eval_clip_flag = ""
+    if use_clip:
+        eval_inputs["clip_source"] = train_inputs["clip_source"]
+        eval_clip_flag = " --clip-dir ${{inputs.clip_source}}"
+
+    print(f"\n>>> [{data_version}] evaluate")
     eval_job = client.jobs.create_or_update(
         command(
             display_name=f"[{data_version}] evaluate",
             command=(
                 "python -m src.evaluate"
                 " --processed-dir ${{inputs.processed_data}}"
-                # Double braces: the outer f-string collapses {{ → {, producing
-                # ${{inputs.checkpoint}} which Azure ML then resolves to the mount path.
                 f" --checkpoint ${{{{inputs.checkpoint}}}}/two_tower.pt"
                 " --split test"
+                f"{eval_clip_flag}"
             ),
-            inputs={
-                "processed_data": processed_input,
-                "checkpoint": Input(
-                    type=AssetTypes.URI_FOLDER,
-                    path=checkpoint_output_path,
-                    mode=InputOutputModes.RO_MOUNT,
-                ),
-            },
+            inputs=eval_inputs,
             environment=ENVIRONMENT,
-            compute=COMPUTE_NAME,
+            compute=compute,
             code=".",
             experiment_name=EXPERIMENT,
             tags={"data_version": data_version, "step": "evaluate"},
         )
     )
-    assert eval_job.name, "Azure ML did not return a job name for evaluate"
-    print(f"    Job name : {eval_job.name}")
-    print(f"    Studio   : {eval_job.studio_url}")
+    print(f"    Job : {eval_job.name}")
+    print(f"    URL : {eval_job.studio_url}")
     client.jobs.stream(eval_job.name)
-    print(f"    Done: evaluate")
 
-    # ── Step 3: Register model ────────────────────────────────────────────────
-    # Tags are how serve.py looks up the exact Blob paths at pod startup.
-    # Omitting `version` lets Azure ML auto-increment (1, 2, 3, ...) so every
-    # pipeline run is a distinct, recoverable entry in the registry.
     print(f"\n>>> Registering model: hm-two-tower")
     registered = client.models.create_or_update(
         Model(
             name="hm-two-tower",
-            path=checkpoint_output_path,
-            description=f"Two-tower retrieval model | data: {data_version} | epochs: {epochs}",
+            path=checkpoint_path,
+            description=f"Two-tower retrieval model | data: {data_version} | epochs: {epochs} | clip: {use_clip}",
             tags={
                 "checkpoint_blob_path": f"checkpoints/{data_version}/two_tower.pt",
                 "data_version": data_version,
                 "epochs": str(epochs),
+                "use_clip": str(use_clip),
             },
         )
     )
     print(f"    Registered: hm-two-tower:{registered.version}")
     print(f"    → Set MODEL_VERSION={registered.version} in the k8s deployment to serve this model.")
 
-    print(f"\nAll steps complete for {data_version}.")
-    print(f"View in Azure ML Studio → Jobs → Experiments → {EXPERIMENT}")
-
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--data-version", required=True, choices=["v1", "v2", "v3"])
+    parser = argparse.ArgumentParser(
+        description="Submit H&M two-tower training pipeline to Azure ML.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python azure/pipeline.py --weeks 26 --epochs 30\n"
+            "  python azure/pipeline.py --weeks 52 --epochs 30 --use-clip\n"
+            "  python azure/pipeline.py --data-version 52w --epochs 30\n"
+        ),
+    )
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument(
+        "--weeks", type=int,
+        help="Full pipeline: sample N weeks of raw data → preprocess → train → evaluate.",
+    )
+    mode.add_argument(
+        "--data-version", type=str,
+        help="Partial pipeline: skip sample + preprocess, train + evaluate on an existing hm-processed-data asset.",
+    )
     parser.add_argument("--epochs", type=int, default=30)
+    parser.add_argument("--use-clip", action="store_true", help="Include CLIP embeddings (requires hm-clip-embeddings asset)")
+    parser.add_argument("--gpu", action="store_true", help="Use GPU compute cluster (hm-gpu-cluster)")
     args = parser.parse_args()
 
-    run_pipeline(args.data_version, args.epochs)
+    client = get_client()
+    if args.weeks:
+        run_full_pipeline(client, args.weeks, args.epochs, use_clip=args.use_clip, use_gpu=args.gpu)
+    else:
+        run_train_pipeline(client, args.data_version, args.epochs, use_clip=args.use_clip, use_gpu=args.gpu)
 
 
 if __name__ == "__main__":

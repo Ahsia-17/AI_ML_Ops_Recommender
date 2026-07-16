@@ -11,6 +11,7 @@ Outputs (all under data/processed/):
 """
 
 import pickle
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -57,8 +58,9 @@ def hash_postal_code(postal_code: pd.Series, n_buckets: int) -> pd.Series:
     return postal_code.apply(lambda x: hash(x) % n_buckets).astype("int64")
 
 
-def build_customer_features(customer_ids: set) -> tuple[pd.DataFrame, dict]:
-    customers = pd.read_csv(RAW_DIR / "customers.csv")
+def build_customer_features(customer_ids: set, raw_dir=None) -> tuple[pd.DataFrame, dict]:
+    _raw_dir = Path(raw_dir) if raw_dir else RAW_DIR
+    customers = pd.read_csv(_raw_dir / "customers.csv")
     customers = customers[customers["customer_id"].isin(customer_ids)].reset_index(drop=True)
 
     encoders = {}
@@ -87,8 +89,9 @@ def build_customer_features(customer_ids: set) -> tuple[pd.DataFrame, dict]:
     return customers[keep_cols], encoders
 
 
-def build_article_features(article_ids: set) -> tuple[pd.DataFrame, dict]:
-    articles = pd.read_csv(RAW_DIR / "articles.csv", dtype={"article_id": str})
+def build_article_features(article_ids: set, raw_dir=None) -> tuple[pd.DataFrame, dict]:
+    _raw_dir = Path(raw_dir) if raw_dir else RAW_DIR
+    articles = pd.read_csv(_raw_dir / "articles.csv", dtype={"article_id": str})
     articles = articles[articles["article_id"].isin(article_ids)].reset_index(drop=True)
 
     encoders = {}
@@ -124,19 +127,44 @@ def main():
     parser.add_argument(
         "--version", type=str, default=None,
         help="Feature store version tag (e.g. 'v1', 'v2', 'v3'). "
-             "Outputs go to data/processed/{version}/ locally and "
-             "processed/{version}/ in Blob Storage. "
+             "Outputs go to data/processed/{version}/ locally. "
              "If omitted, writes to data/processed/ (legacy flat layout)."
+    )
+    parser.add_argument(
+        "--raw-dir", type=str, default=None,
+        help="Directory containing articles.csv and customers.csv. "
+             "Defaults to data/raw/. Set by Azure ML Pipeline to the hm-raw-data mount.",
+    )
+    parser.add_argument(
+        "--transactions-path", type=str, default=None,
+        help="Path to transactions_sample.parquet. "
+             "Defaults to data/processed/transactions_sample.parquet. "
+             "Set by Azure ML Pipeline to the sample step output.",
+    )
+    parser.add_argument(
+        "--output-dir", type=str, default=None,
+        help="Output directory for all processed files. "
+             "Overrides --version. Set by Azure ML Pipeline to the step output folder.",
     )
     args = parser.parse_args()
 
-    out_dir = (PROCESSED_DIR / args.version) if args.version else PROCESSED_DIR
+    raw_dir = Path(args.raw_dir) if args.raw_dir else RAW_DIR
+    transactions_path = (
+        Path(args.transactions_path) if args.transactions_path
+        else PROCESSED_DIR / "transactions_sample.parquet"
+    )
+    if args.output_dir:
+        out_dir = Path(args.output_dir)
+    elif args.version:
+        out_dir = PROCESSED_DIR / args.version
+    else:
+        out_dir = PROCESSED_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    transactions = pd.read_parquet(PROCESSED_DIR / "transactions_sample.parquet")
+    transactions = pd.read_parquet(transactions_path)
 
-    customer_features, customer_encoders = build_customer_features(set(transactions["customer_id"]))
-    article_features, article_encoders = build_article_features(set(transactions["article_id"]))
+    customer_features, customer_encoders = build_customer_features(set(transactions["customer_id"]), raw_dir=raw_dir)
+    article_features, article_encoders = build_article_features(set(transactions["article_id"]), raw_dir=raw_dir)
 
     transactions = transactions.merge(
         customer_features[["customer_id", "customer_idx"]], on="customer_id", how="inner"

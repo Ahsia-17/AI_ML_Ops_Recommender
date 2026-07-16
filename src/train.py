@@ -109,9 +109,12 @@ def main():
     )
     parser.add_argument(
         "--use-clip", action="store_true",
-        help="Include CLIP multi-modal embeddings in the item tower. "
-             "Requires articles_features.parquet to contain a clip_embedding column "
-             "(run preprocess.py after embed_images.py).",
+        help="Include CLIP multi-modal embeddings in the item tower.",
+    )
+    parser.add_argument(
+        "--clip-dir", type=str, default=None,
+        help="Directory containing articles_clip_embeddings.parquet. "
+             "Defaults to --processed-dir. Set by Azure ML Pipeline to the hm-clip-embeddings mount.",
     )
     args = parser.parse_args()
 
@@ -136,7 +139,8 @@ def main():
 
     if args.use_clip:
         if "clip_embedding" not in article_features.columns:
-            clip_path = processed_dir / "articles_clip_embeddings.parquet"
+            clip_dir = Path(args.clip_dir) if args.clip_dir else processed_dir
+            clip_path = clip_dir / "articles_clip_embeddings.parquet"
             clip_df = pd.read_parquet(clip_path)[["article_id", "clip_embedding"]]
             article_features = article_features.merge(clip_df, on="article_id", how="left")
         print(f"CLIP embeddings: {article_features['clip_embedding'].notna().sum():,}/{len(article_features):,} articles")

@@ -8,6 +8,7 @@ alongside a training process) and only rows within the trailing
 """
 
 import argparse
+from pathlib import Path
 
 import pandas as pd
 
@@ -38,15 +39,16 @@ def find_max_date(path, hard_cutoff: pd.Timestamp = None) -> pd.Timestamp:
     return max_date
 
 
-def build_sample(weeks: int, cutoff: str = None) -> pd.DataFrame:
+def build_sample(weeks: int, cutoff: str = None, transactions_path=None) -> pd.DataFrame:
+    path = transactions_path or TRANSACTIONS_PATH
     hard_cutoff = pd.Timestamp(cutoff) if cutoff else None
-    max_date = find_max_date(TRANSACTIONS_PATH, hard_cutoff)
+    max_date = find_max_date(path, hard_cutoff)
     window_start = max_date - pd.Timedelta(weeks=weeks)
     print(f"Snapshot cutoff: {max_date.date()}; keeping rows from {window_start.date()} to {max_date.date()}")
 
     keep_chunks = []
     for chunk in pd.read_csv(
-        TRANSACTIONS_PATH,
+        path,
         parse_dates=["t_dat"],
         dtype=DTYPES,
         chunksize=CHUNK_SIZE,
@@ -72,12 +74,27 @@ def main():
              "(e.g. --cutoff 2020-06-30 for v1, 2020-07-31 for v2, 2020-08-31 for v3). "
              "If omitted, uses the actual max date in the file."
     )
+    parser.add_argument(
+        "--raw-dir", type=str, default=None,
+        help="Directory containing transactions_train.csv. "
+             "Defaults to data/raw/. Set by Azure ML Pipeline to the hm-raw-data mount.",
+    )
+    parser.add_argument(
+        "--output", type=str, default=None,
+        help="Output path for transactions_sample.parquet. "
+             "Defaults to data/processed/transactions_sample.parquet. "
+             "Set by Azure ML Pipeline to the step output folder.",
+    )
     args = parser.parse_args()
 
-    PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
-    sample = build_sample(args.weeks, cutoff=args.cutoff)
-    sample.to_parquet(SAMPLE_PATH, index=False)
-    print(f"Wrote {SAMPLE_PATH}")
+    raw_dir = Path(args.raw_dir) if args.raw_dir else RAW_DIR
+    transactions_path = raw_dir / "transactions_train.csv"
+    output_path = Path(args.output) if args.output else SAMPLE_PATH
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    sample = build_sample(args.weeks, cutoff=args.cutoff, transactions_path=transactions_path)
+    sample.to_parquet(output_path, index=False)
+    print(f"Wrote {output_path}")
 
 
 if __name__ == "__main__":

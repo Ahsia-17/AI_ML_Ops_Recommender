@@ -150,6 +150,11 @@ def main():
         "--processed-dir", type=str, default=None,
         help="Override processed data directory. Used by Azure ML Pipeline to pass the versioned feature folder.",
     )
+    parser.add_argument(
+        "--clip-dir", type=str, default=None,
+        help="Directory containing articles_clip_embeddings.parquet. "
+             "Defaults to --processed-dir. Set by Azure ML Pipeline to the hm-clip-embeddings mount.",
+    )
     args = parser.parse_args()
 
     processed_dir = Path(args.processed_dir) if args.processed_dir else PROCESSED_DIR
@@ -170,7 +175,8 @@ def main():
     article_features = pd.read_parquet(processed_dir / "articles_features.parquet")
 
     if model.item_tower.clip_projection is not None:
-        clip_path = processed_dir / "articles_clip_embeddings.parquet"
+        clip_dir = Path(args.clip_dir) if args.clip_dir else processed_dir
+        clip_path = clip_dir / "articles_clip_embeddings.parquet"
         article_features = article_features.drop(columns=["clip_embedding"], errors="ignore")
         clip_df = pd.read_parquet(clip_path)[["article_id", "clip_embedding"]]
         article_features = article_features.merge(clip_df, on="article_id", how="left")
